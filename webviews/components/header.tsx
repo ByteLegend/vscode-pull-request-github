@@ -36,7 +36,8 @@ export function Header({
 				<span className="author">
 					{!isIssue ? (
 						<div>
-							<AuthorLink for={author} /> {getActionText(state)} into <code> {base} </code> from <code> {head} </code>
+							<AuthorLink for={author} /> {getActionText(state)} into <code> {base} </code>
+							{/* from <code> {head} </code> */}
 						</div>
 					) : null}
 				</span>
@@ -108,7 +109,7 @@ function Title({ title, number, url, canEdit, isCurrentlyCheckedOut, isIssue }: 
 				)}
 			</div>
 			<div className="button-group">
-				<CheckoutButtons {...{ isCurrentlyCheckedOut, isIssue }} />
+				{/* <CheckoutButtons {...{ isCurrentlyCheckedOut, isIssue }} /> */}
 				<button onClick={refresh}>Refresh</button>
 			</div>
 		</div>

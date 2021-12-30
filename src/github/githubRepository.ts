@@ -10,7 +10,7 @@ import * as vscode from 'vscode';
 import { AuthenticationError, isSamlError } from '../common/authentication';
 import Logger from '../common/logger';
 import { Protocol } from '../common/protocol';
-import { parseRemote, Remote } from '../common/remote';
+import { IRemote, parseRemote, Remote } from '../common/remote';
 import { ISessionState } from '../common/sessionState';
 import { ITelemetry } from '../common/telemetry';
 import { PRCommentControllerRegistry } from '../view/pullRequestCommentControllerRegistry';
@@ -140,7 +140,7 @@ export class GitHubRepository implements vscode.Disposable {
 	}
 
 	constructor(
-		public remote: Remote,
+		public remote: IRemote,
 		private readonly _credentialStore: CredentialStore,
 		private readonly _telemetry: ITelemetry,
 		private readonly _sessionState: ISessionState
@@ -239,7 +239,7 @@ export class GitHubRepository implements vscode.Disposable {
 			// We can no longer wait until later for login to be done
 			await this._credentialStore.create();
 			if (!this._credentialStore.isAuthenticated(this.remote.authProviderId)) {
-				this._hub = await this._credentialStore.showSignInNotification(this.remote.authProviderId);
+				await this._credentialStore.showLoggedOutNotification();
 			}
 		} else {
 			this._hub = this._credentialStore.getHub(this.remote.authProviderId);

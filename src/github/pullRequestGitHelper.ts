@@ -180,6 +180,9 @@ export class PullRequestGitHelper {
 		createdForPullRequest?: boolean;
 		remoteInUse?: boolean;
 	} | null> {
+		if (1 + 1 === 2) {
+			return null;
+		}
 		const key = PullRequestGitHelper.buildPullRequestMetadata(pullRequest);
 		const configs = await repository.getConfigs();
 

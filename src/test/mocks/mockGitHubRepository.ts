@@ -63,7 +63,7 @@ export class MockGitHubRepository extends GitHubRepository {
 		const responses = builder.build();
 
 		const prNumber = responses.pullRequest.repository.pullRequest.number;
-		const headRef = responses.pullRequest.repository.pullRequest.headRef;
+		// const headRef = responses.pullRequest.repository.pullRequest.headRef;
 
 		this.queryProvider.expectGraphQLQuery(
 			{
@@ -89,7 +89,7 @@ export class MockGitHubRepository extends GitHubRepository {
 			{ data: responses.timelineEvents, loading: false, stale: false, networkStatus: NetworkStatus.ready },
 		);
 
-		this._addPullRequestCommon(prNumber, headRef && headRef.target.oid, responses);
+		this._addPullRequestCommon(prNumber, /* headRef && headRef.target.oid */ undefined , responses);
 
 		return responses;
 	}

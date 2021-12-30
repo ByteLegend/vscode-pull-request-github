@@ -78,12 +78,13 @@ export class IssueFeatureRegistrar implements vscode.Disposable {
 				',',
 			),
 		);
-		this.context.subscriptions.push(
-			vscode.window.createTreeView('issues:github', {
-				showCollapseAll: true,
-				treeDataProvider: new IssuesTreeData(this._stateManager, this.manager, this.context),
-			}),
-		);
+		// disable this view, otherwise vscode complains "issues:github" not found because we delete it in package.json
+		// this.context.subscriptions.push(
+		// 	vscode.window.createTreeView('issues:github', {
+		// 		showCollapseAll: true,
+		// 		treeDataProvider: new IssuesTreeData(this._stateManager, this.manager, this.context),
+		// 	}),
+		// );
 		this.context.subscriptions.push(
 			vscode.commands.registerCommand(
 				'issue.createIssueFromSelection',

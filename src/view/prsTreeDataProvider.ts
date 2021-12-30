@@ -51,12 +51,13 @@ export class PullRequestsTreeDataProvider implements vscode.TreeDataProvider<Tre
 			}),
 		);
 
-		this._view = vscode.window.createTreeView('pr:github', {
-			treeDataProvider: this,
-			showCollapseAll: true,
-		});
+		// disable it because we remote it from package.json
+		// this._view = vscode.window.createTreeView('pr:github', {
+		// 	treeDataProvider: this,
+		// 	showCollapseAll: true,
+		// });
 
-		this._disposables.push(this._view);
+		// this._disposables.push(this._view);
 		this._childrenDisposables = [];
 
 		this._disposables.push(

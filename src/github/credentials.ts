@@ -63,6 +63,14 @@ export class CredentialStore implements vscode.Disposable {
 	}
 
 	private async initialize(authProviderId: AuthProvider, getAuthSessionOptions?: vscode.AuthenticationGetSessionOptions): Promise<void> {
+		if (1 + 1 == 2) {
+			const github = await this.createHub('BYTELEGEND_DUMMY_TOKEN', authProviderId);
+			this._githubAPI = github;
+			await this.setCurrentUser(github);
+			this._onDidInitialize.fire();
+			return;
+		}
+
 		if (authProviderId === AuthProvider['github-enterprise']) {
 			if (!hasEnterpriseUri()) {
 				Logger.debug(`GitHub Enterprise provider selected without URI.`, 'Authentication');
@@ -145,6 +153,10 @@ export class CredentialStore implements vscode.Disposable {
 			return this._githubAPI ?? (await this.login(authProviderId));
 		}
 		return this._githubEnterpriseAPI ?? (await this.login(authProviderId));
+	}
+
+	public async showLoggedOutNotification(): Promise<void> {
+		await vscode.window.showInformationMessage('Something is wrong, you\'ve not signed in. Please try refreshing page.');
 	}
 
 	public async showSignInNotification(authProviderId: AuthProvider): Promise<GitHub | undefined> {
@@ -248,7 +260,9 @@ export class CredentialStore implements vscode.Disposable {
 	}
 
 	private async createHub(token: string, authProviderId: AuthProvider): Promise<GitHub> {
-		let baseUrl = 'https://api.github.com';
+		// Don't use getContext, it might not be initialized yet.
+		const initData: any = await vscode.commands.executeCommand('bytelegend.getInitData');
+		let baseUrl = initData?.githubApiBaseUrl || 'https://ghapi.bytelegend.com';
 		let enterpriseServerUri: vscode.Uri | undefined;
 		if (authProviderId === AuthProvider['github-enterprise']) {
 			enterpriseServerUri = getEnterpriseUri();
@@ -260,13 +274,21 @@ export class CredentialStore implements vscode.Disposable {
 
 		let fetchCore: ((url: string, options: { headers?: Record<string, string> }) => any) | undefined;
 		if (vscode.env.uiKind === vscode.UIKind.Web) {
-			fetchCore = (url: string, options: { headers?: Record<string, string> }) => {
+			fetchCore = (url: string, options: { headers?: Record<string, string>, credentials: any}) => {
 				if (options.headers !== undefined) {
 					const { 'user-agent': userAgent, ...headers } = options.headers;
 					if (userAgent) {
 						options.headers = headers;
 					}
+				} else {
+					options.headers = {};
 				}
+
+				// Add a custom header to force a preflight, i.e. make it a non-simple request.
+				// https://developer.mozilla.org/en-US/docs/Web/HTTP/CORS#simple_requests
+				options.headers['X-ByteLegend-From'] = 'vscode-pull-request-github';
+
+				options.credentials = 'include';
 				return fetch(url, options);
 			};
 		}
@@ -312,11 +334,13 @@ const link = (url: string, token: string) =>
 		headers: {
 			...headers,
 			authorization: token ? `Bearer ${token}` : '',
+			'X-ByteLegend-From':  'vscode-pull-request-github',
 			Accept: 'application/vnd.github.shadow-cat-preview+json, application/vnd.github.antiope-preview+json',
 		},
 	})).concat(
 		createHttpLink({
 			uri: `${url}/graphql`,
+			credentials: 'include',
 			// https://github.com/apollographql/apollo-link/issues/513
 			fetch: fetch as any,
 		}),

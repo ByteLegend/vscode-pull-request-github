@@ -46,10 +46,11 @@ export class ReviewsManager {
 						}
 					}
 
-					this._prsTreeDataProvider.dispose();
-					this._prsTreeDataProvider = new PullRequestsTreeDataProvider(this._telemetry);
-					this._prsTreeDataProvider.initialize(this._reposManager);
-					this._disposables.push(this._prsTreeDataProvider);
+					// disable pr tree
+					// this._prsTreeDataProvider.dispose();
+					// this._prsTreeDataProvider = new PullRequestsTreeDataProvider(this._telemetry);
+					// this._prsTreeDataProvider.initialize(this._reposManager);
+					// this._disposables.push(this._prsTreeDataProvider);
 				}
 			}),
 		);

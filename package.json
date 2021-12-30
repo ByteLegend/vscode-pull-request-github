@@ -373,26 +373,6 @@
 			]
 		},
 		"views": {
-			"github-pull-requests": [
-				{
-					"id": "github:login",
-					"name": "Login",
-					"when": "ReposManagerStateContext == NeedsAuthentication",
-					"icon": "$(git-pull-request)"
-				},
-				{
-					"id": "pr:github",
-					"name": "Pull Requests",
-					"when": "ReposManagerStateContext != NeedsAuthentication",
-					"icon": "$(git-pull-request)"
-				},
-				{
-					"id": "issues:github",
-					"name": "Issues",
-					"when": "ReposManagerStateContext != NeedsAuthentication",
-					"icon": "$(issues)"
-				}
-			],
 			"github-pull-request": [
 				{
 					"id": "github:createPullRequest",

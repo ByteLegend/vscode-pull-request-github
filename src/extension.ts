@@ -9,6 +9,7 @@ import TelemetryReporter from 'vscode-extension-telemetry';
 import { LiveShare } from 'vsls/vscode.js';
 import { Repository } from './api/api';
 import { GitApiImpl } from './api/api1';
+import { registerByteLegendGitProvider } from './bytelegend/utils';
 import { registerCommands } from './commands';
 import Logger from './common/logger';
 import * as PersistentState from './common/persistentState';
@@ -283,6 +284,10 @@ async function deferredActivate(context: vscode.ExtensionContext, apiImpl: GitAp
 		});
 		context.subscriptions.push(extensionsChangedDisposable);
 	}
+
+	// it requires at least one GitProvider to work
+	Logger.debug('Registering bytelegend git provider.', 'Activation');
+	await registerByteLegendGitProvider(apiImpl);
 
 	Logger.debug('Registering live share git provider.', 'Activation');
 	const liveshareGitProvider = registerLiveShareGitProvider(apiImpl);

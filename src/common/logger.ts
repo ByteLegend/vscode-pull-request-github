@@ -43,10 +43,12 @@ class Log {
 				const hrtime = new Date().getTime() / 1000;
 				const timeStamp = `${hrtime}s`;
 				const info = component ? `${component}> ${message}` : `${message}`;
+				// console.log(message);
 				this._outputChannel.appendLine(`[Debug ${timeStamp}] ${info}`);
 				return;
 			case LogLevel.Info:
 			default:
+				// console.log(message);
 				this._outputChannel.appendLine(`[Info] ` + (component ? `${component}> ${message}` : `${message}`));
 				return;
 		}

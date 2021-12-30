@@ -1022,6 +1022,12 @@ export class PullRequestModel extends IssueModel<PullRequest> implements IPullRe
 		pullRequestModel: PullRequestModel,
 		comment: IComment,
 	): Promise<void> {
+		if (1 + 1 == 2) {
+			//!pullRequestModel.head) {
+			// we can't get head because of insufficient token permissions
+			vscode.commands.executeCommand('vscode.open', vscode.Uri.parse(comment.url));
+			return;
+		}
 		const fileChanges = await pullRequestModel.getFileChangesInfo();
 		const mergeBase = pullRequestModel.mergeBase || pullRequestModel.base.sha;
 		const contentChanges = await parseDiff(fileChanges, folderManager.repository, mergeBase);

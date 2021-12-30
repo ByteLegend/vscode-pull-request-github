@@ -7,6 +7,7 @@
 import * as pathLib from 'path';
 import * as vscode from 'vscode';
 import { GitErrorCodes } from './api/api1';
+import { fetchPullRequestModel } from './bytelegend/utils';
 import { CommentReply, resolveCommentHandler } from './commentHandlerResolver';
 import { IComment } from './common/comment';
 import Logger from './common/logger';
@@ -530,45 +531,59 @@ export function registerCommands(
 	context.subscriptions.push(
 		vscode.commands.registerCommand(
 			'pr.openDescription',
-			async (argument: DescriptionNode | PullRequestModel | undefined) => {
-				let pullRequestModel: PullRequestModel | undefined;
-				if (!argument) {
-					const activePullRequests: PullRequestModel[] = reposManager.folderManagers
-						.map(manager => manager.activePullRequest!)
-						.filter(activePR => !!activePR);
-					if (activePullRequests.length >= 1) {
-						pullRequestModel = await chooseItem<PullRequestModel>(
-							activePullRequests,
-							itemValue => itemValue.title,
+			async (argument: DescriptionNode | PullRequestModel | undefined | string) => {
+				try {
+					let pullRequestModel: PullRequestModel | undefined;
+					if (!argument) {
+						const activePullRequests: PullRequestModel[] = reposManager.folderManagers
+							.map(manager => manager.activePullRequest!)
+							.filter(activePR => !!activePR);
+						if (activePullRequests.length >= 1) {
+							pullRequestModel = await chooseItem<PullRequestModel>(
+								activePullRequests,
+								itemValue => itemValue.title,
+							);
+						}
+					} else if (typeof argument === 'string') {
+						pullRequestModel = await fetchPullRequestModel(
+							argument,
+							credentialStore,
+							telemetry,
+							sessionState,
 						);
+					} else {
+						pullRequestModel = argument instanceof DescriptionNode ? argument.pullRequestModel : argument;
 					}
-				} else {
-					pullRequestModel = argument instanceof DescriptionNode ? argument.pullRequestModel : argument;
-				}
 
-				if (!pullRequestModel) {
-					Logger.appendLine('No pull request found.');
-					return;
-				}
-
-				const folderManager = reposManager.getManagerForIssueModel(pullRequestModel);
-				if (!folderManager) {
-					return;
-				}
-
-				let descriptionNode: DescriptionNode | undefined;
-				if (argument instanceof DescriptionNode) {
-					descriptionNode = argument;
-				} else {
-					const reviewManager = ReviewManager.getReviewManagerForFolderManager(reviewManagers, folderManager);
-					if (!reviewManager) {
+					if (!pullRequestModel) {
+						Logger.appendLine('No pull request found.');
 						return;
 					}
 
-					descriptionNode = reviewManager.changesInPrDataProvider.getDescriptionNode(folderManager);
-				}
+					const folderManager = reposManager.getManagerForIssueModel(pullRequestModel);
+					if (!folderManager) {
+						return;
+					}
 
-				await openDescription(context, telemetry, pullRequestModel, descriptionNode, folderManager);
+					let descriptionNode: DescriptionNode | undefined;
+					if (argument instanceof DescriptionNode) {
+						descriptionNode = argument;
+					} else {
+						const reviewManager = ReviewManager.getReviewManagerForFolderManager(
+							reviewManagers,
+							folderManager,
+						);
+						if (!reviewManager) {
+							return;
+						}
+
+						descriptionNode = reviewManager.changesInPrDataProvider.getDescriptionNode(folderManager);
+					}
+
+					await openDescription(context, telemetry, pullRequestModel, descriptionNode, folderManager);
+				} catch (error) {
+					console.trace(error);
+				}
 			},
 		),
 	);
@@ -807,14 +822,24 @@ export function registerCommands(
 	);
 
 	context.subscriptions.push(
-		vscode.commands.registerCommand('pr.refreshPullRequest', (prNode: PRNode) => {
-			const folderManager = reposManager.getManagerForIssueModel(prNode.pullRequestModel);
-			if (folderManager && prNode.pullRequestModel.equals(folderManager?.activePullRequest)) {
-				ReviewManager.getReviewManagerForFolderManager(reviewManagers, folderManager)?.updateComments();
-			}
+		vscode.commands.registerCommand('pr.refreshPullRequest', async (prNode: PRNode | string) => {
+			if (prNode instanceof PRNode) {
+				const folderManager = reposManager.getManagerForIssueModel(prNode.pullRequestModel);
+				if (folderManager && prNode.pullRequestModel.equals(folderManager?.activePullRequest)) {
+					ReviewManager.getReviewManagerForFolderManager(reviewManagers, folderManager)?.updateComments();
+				}
 
-			PullRequestOverviewPanel.refresh();
-			tree.refresh(prNode);
+				PullRequestOverviewPanel.refresh();
+				tree.refresh(prNode);
+			} else {
+				const prModel = await fetchPullRequestModel(prNode, credentialStore, telemetry, sessionState);
+				const folderManager = reposManager.getManagerForIssueModel(prModel);
+				if (folderManager && prModel.equals(folderManager?.activePullRequest)) {
+					ReviewManager.getReviewManagerForFolderManager(reviewManagers, folderManager)?.updateComments();
+				}
+
+				PullRequestOverviewPanel.refresh();
+			}
 		}),
 	);
 

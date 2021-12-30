@@ -27,8 +27,8 @@ export const HostHelper = class {
 		}
 
 		const hostUri: vscode.Uri = host instanceof vscode.Uri ? host : vscode.Uri.parse(host.host);
-		if (hostUri.authority === 'github.com') {
-			return vscode.Uri.parse('https://api.github.com');
+		if (hostUri.authority === 'bytelegend.com') {
+			return vscode.Uri.parse('https://ghapi.bytelegend.com');
 		} else {
 			return vscode.Uri.parse(`${hostUri.scheme}://${hostUri.authority}`);
 		}

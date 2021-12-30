@@ -8,6 +8,7 @@ import * as vscode from 'vscode';
 import type { Branch, Repository, UpstreamRef } from '../api/api';
 import { GitApiImpl, GitErrorCodes, RefType } from '../api/api1';
 import { GitHubManager } from '../authentication/githubServer';
+import { getDefaultByteLegendRemote } from '../bytelegend/utils';
 import Logger from '../common/logger';
 import { Protocol, ProtocolType } from '../common/protocol';
 import { parseRepositoryRemotes, Remote } from '../common/remote';
@@ -518,7 +519,7 @@ export class FolderRepositoryManager implements vscode.Disposable {
 			return;
 		}
 
-		const activeRemotes = await this.getActiveRemotes();
+		const activeRemotes = [await getDefaultByteLegendRemote()];// await this.getActiveRemotes();
 		const isAuthenticated = this._credentialStore.isAuthenticated(AuthProvider.github) || this._credentialStore.isAuthenticated(AuthProvider['github-enterprise']);
 		vscode.commands.executeCommand('setContext', 'github:authenticated', isAuthenticated);
 

@@ -10,7 +10,7 @@ import { Icon } from './icon';
 export const Avatar = ({ for: author }: { for: Partial<PullRequest['author']> }) => (
 	<a className="avatar-link" href={author.url} title={author.url}>
 		{author.avatarUrl ? (
-			<img className="avatar" src={author.avatarUrl} alt="" />
+			<img className="avatar" src={author.avatarUrl.replace('avatars.githubusercontent.com', 'ghavatars.bytelegend.com')} alt="" />
 		) : (
 			<Icon className="avatar-icon" src={require('../../resources/icons/dark/github.svg')} />
 		)}

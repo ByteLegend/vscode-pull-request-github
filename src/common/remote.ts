@@ -8,7 +8,19 @@ import { AuthProvider } from '../github/credentials';
 import { getEnterpriseUri } from '../github/utils';
 import { Protocol } from './protocol';
 
-export class Remote {
+export interface IRemote {
+	readonly remoteName: string;
+	readonly url: string;
+	readonly gitProtocol: Protocol;
+	readonly host: string;
+	readonly owner: string;
+	readonly repositoryName: string;
+	readonly normalizedHost: string;
+	readonly authProviderId: AuthProvider;
+	equals(remote: IRemote): boolean;
+}
+
+export class Remote implements IRemote {
 	public get host(): string {
 		return this.gitProtocol.host;
 	}

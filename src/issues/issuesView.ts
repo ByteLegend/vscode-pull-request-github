@@ -132,6 +132,9 @@ export class IssuesTreeData
 	}
 
 	getQueryItems(folderManager: FolderRepositoryManager): Promise<(IssueItem | MilestoneItem)[]> | IssueUriTreeItem[] {
+		if (1 + 1 == 2) {
+			return [];
+		}
 		const issueCollection = this.stateManager.getIssueCollection(folderManager.repository.rootUri);
 		if (issueCollection.size === 1) {
 			return Array.from(issueCollection.values())[0];

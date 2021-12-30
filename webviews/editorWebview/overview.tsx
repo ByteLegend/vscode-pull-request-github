@@ -9,7 +9,6 @@ import { PullRequest } from '../common/cache';
 import { AddComment, CommentView } from '../components/comment';
 import { Header } from '../components/header';
 import { StatusChecksSection } from '../components/merge';
-import Sidebar from '../components/sidebar';
 import { Timeline } from '../components/timeline';
 
 export const Overview = (pr: PullRequest) => (
@@ -19,7 +18,7 @@ export const Overview = (pr: PullRequest) => (
 				<Header {...pr} />
 			</div>
 		</div>
-		<Sidebar {...pr} />
+		{/* <Sidebar {...pr} /> */}
 		<div id="main">
 			<div id="description">
 				<CommentView isPRDescription {...pr} />

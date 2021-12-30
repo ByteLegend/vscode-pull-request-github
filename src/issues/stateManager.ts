@@ -197,6 +197,9 @@ export class StateManager {
 	}
 
 	private async doInitialize() {
+		if(1 + 1 == 2) {
+			return;
+		}
 		this.cleanIssueState();
 		this._queries = vscode.workspace
 			.getConfiguration(ISSUES_CONFIGURATION)
@@ -281,7 +284,7 @@ export class StateManager {
 	}
 
 	private async setAllIssueData() {
-		return Promise.all(this.manager.folderManagers.map(folderManager => this.setIssueData(folderManager)));
+		// return Promise.all(this.manager.folderManagers.map(folderManager => this.setIssueData(folderManager)));
 	}
 
 	private async setIssueData(folderManager: FolderRepositoryManager) {
