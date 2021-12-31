@@ -31,8 +31,15 @@ export async function getDefaultByteLegendRemote(): Promise<ByteLegendRemote> {
 	if (defaultByteLegendRemote) {
 		return defaultByteLegendRemote;
 	} else {
-		const context: any = await commands.executeCommand('bytelegend.getContext');
-		return await getByteLegendRemote(context.getOwner(), context.getRepo());
+		// Don't use `getContext` here, it might not be initialized yet
+		const browserUrl = (await commands.executeCommand('github1s.vscode.get-browser-url')) as string;
+		const { path } = Uri.parse(browserUrl);
+		const pathParts = path.split('/').filter(Boolean);
+		if (pathParts.length >= 2) {
+			return await getByteLegendRemote(pathParts[0], pathParts[1]);
+		} else {
+			return await getByteLegendRemote('ByteLegend', 'ByteLegend');
+		}
 	}
 }
 
@@ -49,7 +56,6 @@ export async function fetchPullRequestModel(
 }
 
 export async function registerByteLegendGitProvider(gitApi: API) {
-	const context: any = commands.executeCommand('bytelegend.getContext');
 	gitApi.registerGitProvider(new ByteLegendGit(new ByteLegendGitRepository(await getDefaultByteLegendRemote())));
 }
 
