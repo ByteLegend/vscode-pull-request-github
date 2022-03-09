@@ -7,7 +7,7 @@ import { Octokit } from '@octokit/rest';
 import { ApolloClient, InMemoryCache, NormalizedCacheObject } from 'apollo-boost';
 import { setContext } from 'apollo-link-context';
 import { createHttpLink } from 'apollo-link-http';
-import fetch from 'node-fetch';
+import fetch from 'cross-fetch';
 import * as vscode from 'vscode';
 import Logger from '../common/logger';
 import * as PersistentState from '../common/persistentState';
@@ -47,16 +47,25 @@ export class CredentialStore implements vscode.Disposable {
 	private _onDidInitialize: vscode.EventEmitter<void> = new vscode.EventEmitter();
 	public readonly onDidInitialize: vscode.Event<void> = this._onDidInitialize.event;
 
+	private _onDidGetSession: vscode.EventEmitter<void> = new vscode.EventEmitter();
+	public readonly onDidGetSession = this._onDidGetSession.event;
+
 	constructor(private readonly _telemetry: ITelemetry) {
 		this._disposables = [];
 		this._disposables.push(
-			vscode.authentication.onDidChangeSessions(() => {
+			vscode.authentication.onDidChangeSessions(async () => {
+				const promises: Promise<any>[] = [];
 				if (!this.isAuthenticated(AuthProvider.github)) {
-					this.initialize(AuthProvider.github);
+					promises.push(this.initialize(AuthProvider.github));
 				}
 
 				if (!this.isAuthenticated(AuthProvider['github-enterprise']) && hasEnterpriseUri()) {
-					this.initialize(AuthProvider['github-enterprise']);
+					promises.push(this.initialize(AuthProvider['github-enterprise']));
+				}
+
+				await Promise.all(promises);
+				if (this.isAnyAuthenticated()) {
+					this._onDidGetSession.fire();
 				}
 			}),
 		);

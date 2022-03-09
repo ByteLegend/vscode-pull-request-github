@@ -4,12 +4,11 @@
  *--------------------------------------------------------------------------------------------*/
 
 import * as vscode from 'vscode';
+import { FILE_LIST_LAYOUT } from '../common/settingKeys';
 import { ITelemetry } from '../common/telemetry';
 import { EXTENSION_ID } from '../constants';
 import { REMOTES_SETTING, ReposManagerState, SETTINGS_NAMESPACE } from '../github/folderRepositoryManager';
 import { RepositoriesManager } from '../github/repositoriesManager';
-import { FileViewedDecorationProvider } from './fileViewedDecorationProvider';
-import { getInMemPRFileSystemProvider } from './inMemPRContentProvider';
 import { DecorationProvider } from './treeDecorationProvider';
 import { CategoryTreeNode, PRCategoryActionNode, PRCategoryActionType } from './treeNodes/categoryNode';
 import { InMemFileChangeNode } from './treeNodes/fileChangeNode';
@@ -35,9 +34,7 @@ export class PullRequestsTreeDataProvider implements vscode.TreeDataProvider<Tre
 
 	constructor(private _telemetry: ITelemetry) {
 		this._disposables = [];
-		this._disposables.push(vscode.workspace.registerFileSystemProvider('pr', getInMemPRFileSystemProvider(), { isReadonly: true }));
 		this._disposables.push(vscode.window.registerFileDecorationProvider(DecorationProvider));
-		this._disposables.push(vscode.window.registerFileDecorationProvider(FileViewedDecorationProvider));
 		this._disposables.push(
 			vscode.commands.registerCommand('pr.refreshList', _ => {
 				this._onDidChangeTreeData.fire();
@@ -86,7 +83,7 @@ export class PullRequestsTreeDataProvider implements vscode.TreeDataProvider<Tre
 
 		this._disposables.push(
 			vscode.workspace.onDidChangeConfiguration(e => {
-				if (e.affectsConfiguration(`${SETTINGS_NAMESPACE}.fileListLayout`)) {
+				if (e.affectsConfiguration(`${SETTINGS_NAMESPACE}.${FILE_LIST_LAYOUT}`)) {
 					this._onDidChangeTreeData.fire();
 				}
 			}),
@@ -163,7 +160,7 @@ export class PullRequestsTreeDataProvider implements vscode.TreeDataProvider<Tre
 	}
 
 	async getChildren(element?: TreeNode): Promise<TreeNode[]> {
-		if (!this._reposManager) {
+		if (!this._reposManager?.folderManagers.length) {
 			return [];
 		}
 

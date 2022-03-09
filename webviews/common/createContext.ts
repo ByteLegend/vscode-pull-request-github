@@ -4,33 +4,12 @@
  *--------------------------------------------------------------------------------------------*/
 
 import { createContext } from 'react';
+import { CreateParams, ScrollPosition } from '../../common/views';
 import { getMessageHandler, MessageHandler, vscode } from './message';
 
-export interface RemoteInfo {
-	owner: string;
-	repositoryName: string;
-}
-
-export interface CreateParams {
-	availableRemotes: RemoteInfo[];
-	branchesForRemote: string[];
-	branchesForCompare: string[];
-
-	pendingTitle?: string;
-	pendingDescription?: string;
-	baseRemote?: RemoteInfo;
-	baseBranch?: string;
-	compareRemote?: RemoteInfo;
-	compareBranch?: string;
-	isDraft: boolean;
-
-	validate: boolean;
-	showTitleValidationError: boolean;
-	createError?: string;
-}
-
 const defaultCreateParams: CreateParams = {
-	availableRemotes: [],
+	availableBaseRemotes: [],
+	availableCompareRemotes: [],
 	branchesForRemote: [],
 	branchesForCompare: [],
 	validate: false,
@@ -79,7 +58,20 @@ export class CreatePRContext {
 	};
 
 	public changeBaseBranch = async (branch: string): Promise<void> => {
-		return this.postMessage({ command: 'pr.changeBaseBranch', args: branch });
+		const response: { title?: string, description?: string } = await this.postMessage({
+			command: 'pr.changeBaseBranch',
+			args: branch
+		});
+
+		const pendingTitle = (!this.createParams.pendingTitle || (this.createParams.pendingTitle === this.createParams.defaultTitle))
+			? response.title : this.createParams.pendingTitle;
+		const pendingDescription = (!this.createParams.pendingDescription || (this.createParams.pendingDescription === this.createParams.defaultDescription))
+			? response.description : this.createParams.pendingDescription;
+
+		this.updateState({
+			pendingTitle,
+			pendingDescription
+		});
 	};
 
 	public changeCompareRemote = async (owner: string, repositoryName: string): Promise<void> => {
@@ -124,6 +116,9 @@ export class CreatePRContext {
 					owner: this.createParams.baseRemote.owner,
 					repo: this.createParams.baseRemote.repositoryName,
 					base: this.createParams.baseBranch,
+					compareBranch: this.createParams.compareBranch,
+					compareOwner: this.createParams.compareRemote.owner,
+					compareRepo: this.createParams.compareRemote.repositoryName,
 					draft: this.createParams.isDraft,
 				},
 			});
@@ -137,9 +132,12 @@ export class CreatePRContext {
 		return this._handler.postMessage(message);
 	};
 
-	handleMessage = async (message: any): Promise<void> => {
+	handleMessage = async (message: {command: string, params?: CreateParams, scrollPosition?: ScrollPosition}): Promise<void> => {
 		switch (message.command) {
 			case 'pr.initialize':
+				if (!message.params) {
+					return;
+				}
 				if (this.createParams.pendingTitle === undefined) {
 					message.params.pendingTitle = message.params.defaultTitle;
 				}
@@ -186,6 +184,9 @@ export class CreatePRContext {
 				return;
 
 			case 'reset':
+				if (!message.params) {
+					return;
+				}
 				message.params.pendingTitle = message.params.defaultTitle;
 				message.params.pendingDescription = message.params.defaultDescription;
 				message.params.baseRemote = message.params.defaultBaseRemote;
@@ -196,6 +197,9 @@ export class CreatePRContext {
 				return;
 
 			case 'set-scroll':
+				if (!message.scrollPosition) {
+					return;
+				}
 				window.scrollTo(message.scrollPosition.x, message.scrollPosition.y);
 				return;
 		}

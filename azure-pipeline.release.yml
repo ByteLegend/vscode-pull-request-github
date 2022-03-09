@@ -1,14 +1,12 @@
-# Run on a schedule
-trigger: none
-pr: none
+name: $(Date:yyyyMMdd)$(Rev:.r)
 
-schedules:
-  - cron: '0 9 * * Mon-Thu'
-    displayName: Nightly Release Schedule
-    always: true
-    branches:
-      include:
-        - main
+trigger:
+  branches:
+    include:
+      - main
+  tags:
+    include: ['*']
+pr: none
 
 resources:
   repositories:
@@ -19,7 +17,7 @@ resources:
       endpoint: Monaco
 
 extends:
-  template: azure-pipelines/extension/pre-release.yml@templates
+  template: azure-pipelines/extension/stable.yml@templates
   parameters:
     buildPlatforms:
       - MacOS
@@ -55,13 +53,3 @@ extends:
         displayName: Run test suite (webkit)
         env:
           TEST_JUNIT_XML_PATH: $(Agent.HomeDirectory)/browser-webkit-test-results.xml
-
-      - script: >
-          node ./scripts/prepare-nightly-build.js
-          -v "$VERSION"
-        displayName: Generate package.json
-
-      - script: |
-          mv ./package.json ./package.json.bak
-          mv ./package.insiders.json ./package.json
-        displayName: Override package.json

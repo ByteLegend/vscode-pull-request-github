@@ -13,10 +13,10 @@
 	"enabledApiProposals": [
 		"tokenInformation"
 	],
-	"version": "0.34.0",
+	"version": "0.38.0",
 	"publisher": "GitHub",
 	"engines": {
-		"vscode": "^1.63.0"
+		"vscode": "^1.65.0"
 	},
 	"categories": [
 		"Other"
@@ -192,7 +192,7 @@
 					"description": "Default handler for terminal links."
 				},
 				"githubPullRequests.commentExpandState": {
-					"type":"string",
+					"type": "string",
 					"enum": [
 						"expandUnresolved",
 						"collapseAll"
@@ -205,20 +205,29 @@
 					"description": "Controls whether comments are expanded when a document with comments is opened."
 				},
 				"githubPullRequests.useReviewMode": {
-					"type": "array",
-					"description": "Controls which pull requests states cause the extension to go into review mode. Open pull requests will always use review mode.",
-					"items": {
-						"type": "string",
-						"enum": [
-							"open",
-							"merged",
-							"closed"
-						]
+					"type": "object",
+					"description": "Choose which pull request states will use review mode. \"Open\" pull requests will always use review mode.",
+					"additionalProperties": false,
+					"properties": {
+						"merged": {
+							"type": "boolean",
+							"description": "Use review mode for merged pull requests.",
+							"default": true
+						},
+						"closed": {
+							"type": "boolean",
+							"description": "Use review mode for closed pull requests. Merged pull requests are not considered \"closed\".",
+							"default": false
+						}
 					},
-					"default": [
-						"open",
-						"merged"
-					]
+					"required": [
+						"merged",
+						"closed"
+					],
+					"default": {
+						"merged": true,
+						"closed": false
+					}
 				},
 				"githubIssues.ignoreMilestones": {
 					"type": "array",
@@ -452,6 +461,11 @@
 				"icon": "$(globe)"
 			},
 			{
+				"command": "pr.openAllDiffs",
+				"title": "Open All Diffs",
+				"category": "GitHub Pull Requests"
+			},
+			{
 				"command": "pr.refreshPullRequest",
 				"title": "Refresh Pull Request",
 				"category": "GitHub Pull Requests"
@@ -631,13 +645,13 @@
 				"command": "pr.markFileAsViewed",
 				"title": "Mark File As Viewed",
 				"category": "GitHub Pull Requests",
-				"icon": "$(check)"
+				"icon": "$(pass)"
 			},
 			{
 				"command": "pr.unmarkFileAsViewed",
 				"title": "Mark File As Not Viewed",
 				"category": "GitHub Pull Requests",
-				"icon": "$(eye-closed)"
+				"icon": "$(pass-filled)"
 			},
 			{
 				"command": "pr.openReview",
@@ -903,6 +917,10 @@
 					"when": "gitHubOpenRepositoryCount != 0 && github:inReviewMode"
 				},
 				{
+					"command": "pr.openAllDiffs",
+					"when": "gitHubOpenRepositoryCount != 0 && github:inReviewMode"
+				},
+				{
 					"command": "pr.refreshDescription",
 					"when": "gitHubOpenRepositoryCount != 0 && github:inReviewMode"
 				},
@@ -1004,6 +1022,10 @@
 				},
 				{
 					"command": "pr.markFileAsViewed",
+					"when": "false"
+				},
+				{
+					"command": "pr.unmarkFileAsViewed",
 					"when": "false"
 				},
 				{
@@ -1203,13 +1225,23 @@
 				},
 				{
 					"command": "review.openFile",
-					"group": "inline",
+					"group": "inline@0",
 					"when": "openDiffOnClick && view == prStatus:github && viewItem =~ /filechange(?!:DELETE)/"
 				},
 				{
 					"command": "pr.openDiffView",
-					"group": "inline",
+					"group": "inline@0",
 					"when": "!openDiffOnClick && view == prStatus:github && viewItem =~ /filechange(?!:DELETE)/"
+				},
+				{
+					"command": "pr.markFileAsViewed",
+					"when": "view =~ /(pr|prStatus):github/ && viewItem =~ /filechange(.*):unviewed/",
+					"group": "inline@1"
+				},
+				{
+					"command": "pr.unmarkFileAsViewed",
+					"when": "view =~ /(pr|prStatus):github/ && viewItem =~ /filechange(.*):viewed/",
+					"group": "inline@1"
 				},
 				{
 					"command": "pr.openOriginalFile",
@@ -1312,16 +1344,6 @@
 				{
 					"command": "issue.editQuery",
 					"when": "view == issues:github && viewItem == query"
-				},
-				{
-					"command": "pr.markFileAsViewed",
-					"when": "view =~ /(pr|prStatus):github/ && viewItem =~ /filechange(.*):unviewed/",
-					"group": "inline"
-				},
-				{
-					"command": "pr.unmarkFileAsViewed",
-					"when": "view =~ /(pr|prStatus):github/ && viewItem =~ /filechange(.*):viewed/",
-					"group": "inline"
 				}
 			],
 			"editor/title": [
@@ -1505,7 +1527,6 @@
 	},
 	"scripts": {
 		"postinstall": "yarn update-dts",
-		"vscode:prepublish": "yarn run bundle",
 		"bundle": "webpack --mode production --env esbuild",
 		"bundle:node": "webpack --mode production --config-name extension:node --config-name webviews",
 		"bundle:web": "webpack --mode production --config-name extension:webworker --config-name webviews",
@@ -1524,7 +1545,7 @@
 		"browsertest": "yarn run browsertest:preprocess && node ./dist/browser/test/runTests.js",
 		"test:preprocess-gql": "node scripts/preprocess-gql --in src/github/queries.gql --out out/src/github/queries.gql",
 		"test:preprocess-svg": "node scripts/preprocess-svg --in ../resources/ --out out/resources",
-		"update-dts": "pushd \"src/@types\" && npx vscode-dts main && npx vscode-dts dev && popd",
+		"update-dts": "cd \"src/@types\" && npx vscode-dts main && npx vscode-dts dev",
 		"watch": "webpack --watch --mode development --env esbuild",
 		"watch:web": "webpack --watch --mode development --config-name extension:webworker --config-name webviews"
 	},
@@ -1544,7 +1565,7 @@
 		"@typescript-eslint/eslint-plugin": "4.18.0",
 		"@typescript-eslint/parser": "4.18.0",
 		"@vscode/test-electron": "^1.6.1",
-		"@vscode/test-web": "^0.0.8",
+		"@vscode/test-web": "^0.0.22",
 		"assert": "^2.0.0",
 		"buffer": "^6.0.3",
 		"constants-browserify": "^1.0.0",
@@ -1585,7 +1606,7 @@
 		"ts-loader": "8.0.18",
 		"tty": "1.0.1",
 		"typescript": "4.2.3",
-		"webpack": "5.26.3",
+		"webpack": "5.68.0",
 		"webpack-cli": "4.2.0"
 	},
 	"dependencies": {
@@ -1593,19 +1614,18 @@
 		"@octokit/types": "6.10.0",
 		"apollo-boost": "^0.4.9",
 		"apollo-link-context": "1.0.20",
-		"cross-fetch": "3.0.6",
+		"cross-fetch": "3.1.5",
 		"dayjs": "1.10.4",
 		"events": "3.2.0",
 		"fast-deep-equal": "^3.1.3",
 		"lru-cache": "6.0.0",
-		"marked": "^0.8.0",
-		"node-fetch": "3.0.0-beta.9",
+		"marked": "^4.0.10",
 		"react": "^16.12.0",
 		"react-dom": "^16.12.0",
 		"ssh-config": "^2.0.0-alpha.3",
 		"tunnel": "0.0.6",
 		"uuid": "8.3.2",
-		"vscode-extension-telemetry": "0.4.4",
+		"vscode-extension-telemetry": "0.4.5",
 		"vscode-tas-client": "^0.1.17",
 		"vsls": "^0.3.967"
 	},

@@ -3,7 +3,12 @@
  *  Licensed under the MIT License. See License.txt in the project root for license information.
  *--------------------------------------------------------------------------------------------*/
 
-export const PR_SETTINGS_NAMESPACE = 'githubPullRequests';
-export const TERMINAL_LINK_HANDLER = 'terminalLinksHandler';
-export const USE_REVIEW_MODE = 'useReviewMode';
-export const FILE_LIST_LAYOUT = 'fileListLayout';
+declare module 'vscode' {
+	export interface Comment {
+		/**
+		 * An optional timestamp that will be displayed in comments.
+		 * The date will be formatted according to the user's locale and settings.
+		 */
+		timestamp?: Date;
+	}
+}

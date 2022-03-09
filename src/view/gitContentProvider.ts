@@ -6,16 +6,62 @@
 
 import * as pathLib from 'path';
 import * as vscode from 'vscode';
+import { Repository } from '../api/api';
 import { GitApiImpl } from '../api/api1';
+import Logger from '../common/logger';
 import { fromReviewUri } from '../common/uri';
+import { CredentialStore } from '../github/credentials';
 import { getRepositoryForFile } from '../github/utils';
 import { ReadonlyFileSystemProvider } from './readonlyFileSystemProvider';
 
 export class GitContentFileSystemProvider extends ReadonlyFileSystemProvider {
 	private _fallback?: (uri: vscode.Uri) => Promise<string>;
 
-	constructor(private gitAPI: GitApiImpl) {
+	constructor(private gitAPI: GitApiImpl, private credentialStore: CredentialStore) {
 		super();
+	}
+
+	private async waitForRepos(milliseconds: number): Promise<void> {
+		Logger.appendLine('Waiting for repositories.', 'GitContentFileSystemProvider');
+		let eventDisposable: vscode.Disposable | undefined = undefined;
+		const openPromise = new Promise<void>(resolve => {
+			eventDisposable = this.gitAPI.onDidOpenRepository(() => {
+				Logger.appendLine('Found at least one repository.', 'GitContentFileSystemProvider');
+				eventDisposable?.dispose();
+				eventDisposable = undefined;
+				resolve();
+			});
+		});
+		let timeout: NodeJS.Timeout | undefined;
+		const timeoutPromise = new Promise<void>(resolve => {
+			timeout = setTimeout(() => {
+				Logger.appendLine('Timed out while waiting for repositories.', 'GitContentFileSystemProvider');
+				resolve();
+			}, milliseconds);
+		});
+		await Promise.race([openPromise, timeoutPromise]);
+		if (timeout) {
+			clearTimeout(timeout);
+		}
+		if (eventDisposable) {
+			eventDisposable!.dispose();
+		}
+	}
+
+	private async waitForAuth(): Promise<void> {
+		if (this.credentialStore.isAnyAuthenticated()) {
+			return;
+		}
+		return new Promise(resolve => this.credentialStore.onDidGetSession(() => resolve()));
+	}
+
+	private async getRepositoryForFile(file: vscode.Uri): Promise<Repository | undefined> {
+		await this.waitForAuth();
+		if ((this.gitAPI.state !== 'initialized') || (this.gitAPI.repositories.length === 0)) {
+			await this.waitForRepos(4000);
+		}
+
+		return getRepositoryForFile(this.gitAPI, file);
 	}
 
 	async readFile(uri: vscode.Uri): Promise<Uint8Array> {
@@ -29,7 +75,7 @@ export class GitContentFileSystemProvider extends ReadonlyFileSystemProvider {
 			return new TextEncoder().encode('');
 		}
 
-		const repository = getRepositoryForFile(this.gitAPI, vscode.Uri.file(rootPath));
+		const repository = await this.getRepositoryForFile(vscode.Uri.file(rootPath));
 		if (!repository) {
 			vscode.window.showErrorMessage(`We couldn't find an open repository for ${commit} locally.`);
 			return new TextEncoder().encode('');
@@ -38,6 +84,7 @@ export class GitContentFileSystemProvider extends ReadonlyFileSystemProvider {
 		const absolutePath = pathLib.join(repository.rootUri.fsPath, path).replace(/\\/g, '/');
 		let content: string;
 		try {
+			Logger.appendLine(`Getting repository (${repository.rootUri}) content for commit ${commit} and path ${absolutePath}`, 'GitContentFileSystemProvider');
 			content = await repository.show(commit, absolutePath);
 			if (!content) {
 				throw new Error();

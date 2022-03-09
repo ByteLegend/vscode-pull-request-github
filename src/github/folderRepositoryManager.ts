@@ -525,6 +525,8 @@ export class FolderRepositoryManager implements vscode.Disposable {
 
 		const repositories: GitHubRepository[] = [];
 		const resolveRemotePromises: Promise<boolean>[] = [];
+		const oldRepositories: GitHubRepository[] = [];
+		this._githubRepositories.forEach(repo => oldRepositories.push(repo));
 
 		const authenticatedRemotes = activeRemotes.filter(remote => this._credentialStore.isAuthenticated(remote.authProviderId));
 		authenticatedRemotes.forEach(remote => {
@@ -538,7 +540,6 @@ export class FolderRepositoryManager implements vscode.Disposable {
 				return this._credentialStore.showSamlMessageAndAuth();
 			}
 
-			const oldRepositories = this._githubRepositories;
 			this._githubRepositories = repositories;
 			oldRepositories.filter(old => this._githubRepositories.indexOf(old) < 0).forEach(repo => repo.dispose());
 
@@ -560,11 +561,11 @@ export class FolderRepositoryManager implements vscode.Disposable {
 			}
 
 			this.getAssignableUsers(repositoriesChanged);
-			this._onDidLoadRepositories.fire(
-				isAuthenticated || !activeRemotes.length
-					? ReposManagerState.RepositoriesLoaded
-					: ReposManagerState.NeedsAuthentication,
-			);
+			if (isAuthenticated && activeRemotes.length) {
+				this._onDidLoadRepositories.fire(ReposManagerState.RepositoriesLoaded);
+			} else if (!isAuthenticated) {
+				this._onDidLoadRepositories.fire(ReposManagerState.NeedsAuthentication);
+			}
 			if (!silent) {
 				this._onDidChangeRepositories.fire();
 			}
@@ -825,14 +826,6 @@ export class FolderRepositoryManager implements vscode.Disposable {
 		return results;
 	}
 
-	async listBranches(owner: string, repo: string): Promise<string[]> {
-		if (this._githubRepositories.length) {
-			return this._githubRepositories[0].listBranches(owner, repo);
-		} else {
-			throw new Error('No GitHub repositories found');
-		}
-	}
-
 	async deleteLocalPullRequest(pullRequest: PullRequestModel, force?: boolean): Promise<void> {
 		if (!pullRequest.localBranchName) {
 			return;
@@ -1072,27 +1065,29 @@ export class FolderRepositoryManager implements vscode.Disposable {
 		 * - At the root, the docs folder, or the.github folder, named pull_request_template.md or PULL_REQUEST_TEMPLATE.md
 		 * - At the same folder locations under a PULL_REQUEST_TEMPLATE folder with any name
 		 */
-		const templatesPattern1 = await vscode.workspace.findFiles(
-			new vscode.RelativePattern(
-				this._repository.rootUri,
-				'{pull_request_template,PULL_REQUEST_TEMPLATE}.md',
-			),
-		);
-		const templatesPattern2 = await vscode.workspace.findFiles(
-			new vscode.RelativePattern(
-				this._repository.rootUri,
-				'{docs,.github}/{pull_request_template,PULL_REQUEST_TEMPLATE}.md',
-			),
+		const pattern1 = '{pull_request_template,PULL_REQUEST_TEMPLATE}.md';
+		const templatesPattern1 = vscode.workspace.findFiles(
+			new vscode.RelativePattern(this._repository.rootUri, pattern1)
 		);
 
-		const templatesPattern3 = await vscode.workspace.findFiles(
-			new vscode.RelativePattern(this._repository.rootUri, 'PULL_REQUEST_TEMPLATE/*.md'),
-		);
-		const templatesPattern4 = await vscode.workspace.findFiles(
-			new vscode.RelativePattern(this._repository.rootUri, '{docs,.github}/PULL_REQUEST_TEMPLATE/*.md'),
+		const pattern2 = '{docs,.github}/{pull_request_template,PULL_REQUEST_TEMPLATE}.md';
+		const templatesPattern2 = vscode.workspace.findFiles(
+			new vscode.RelativePattern(this._repository.rootUri, pattern2), null
 		);
 
-		return [...templatesPattern1, ...templatesPattern2, ...templatesPattern3, ...templatesPattern4];
+		const pattern3 = 'PULL_REQUEST_TEMPLATE/*.md';
+		const templatesPattern3 = vscode.workspace.findFiles(
+			new vscode.RelativePattern(this._repository.rootUri, pattern3)
+		);
+
+		const pattern4 = '{docs,.github}/PULL_REQUEST_TEMPLATE/*.md';
+		const templatesPattern4 = vscode.workspace.findFiles(
+			new vscode.RelativePattern(this._repository.rootUri, pattern4), null
+		);
+
+		const allResults = await Promise.all([templatesPattern1, templatesPattern2, templatesPattern3, templatesPattern4]);
+
+		return [...allResults[0], ...allResults[1], ...allResults[2], ...allResults[3]];
 	}
 
 	async getPullRequestDefaults(branch?: Branch): Promise<PullRequestDefaults> {
@@ -1775,7 +1770,7 @@ export class FolderRepositoryManager implements vscode.Disposable {
 			return parseGraphQLUser(data, githubRepository);
 		} catch (e) {
 			// Ignore cases where the user doesn't exist
-			if (!(e.message as string).startsWith('GraphQL error: Could not resolve to a User with the login of')) {
+			if (!(e.message as (string | undefined))?.startsWith('GraphQL error: Could not resolve to a User with the login of')) {
 				Logger.appendLine(e.message);
 			}
 		}

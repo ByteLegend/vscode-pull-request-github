@@ -97,6 +97,9 @@ export class GitHubRepository implements vscode.Disposable {
 	private _pullRequestModels = new Map<number, PullRequestModel>();
 	public readonly isGitHubDotCom: boolean;
 
+	private _onDidAddPullRequest: vscode.EventEmitter<PullRequestModel> = new vscode.EventEmitter();
+	public readonly onDidAddPullRequest: vscode.Event<PullRequestModel> = this._onDidAddPullRequest.event;
+
 	public get hub(): GitHub {
 		if (!this._hub) {
 			if (!this._initialized) {
@@ -110,6 +113,10 @@ export class GitHubRepository implements vscode.Disposable {
 
 	public equals(repo: GitHubRepository): boolean {
 		return this.remote.equals(repo.remote);
+	}
+
+	get pullRequestModels(): Map<number, PullRequestModel> {
+		return this._pullRequestModels;
 	}
 
 	public async ensureCommentsController(): Promise<void> {
@@ -167,6 +174,10 @@ export class GitHubRepository implements vscode.Disposable {
 		} catch (e) {
 			// There's an issue with the GetChecks that can result in this error.
 			if ((query.query !== this.schema.GetChecks) && e.message?.startsWith('GraphQL error: Resource protected by organization SAML enforcement.')) {
+				await this._credentialStore.recreate();
+				rsp = await gql.query<T>(query);
+			} else if (e.message?.startsWith('GraphQL error: API rate limit exceeded')) {
+				// Unclear why we can get an API rate limit error when signed in, but when we do the fix is to force a re-auth.
 				await this._credentialStore.recreate();
 				rsp = await gql.query<T>(query);
 			} else {
@@ -668,6 +679,7 @@ export class GitHubRepository implements vscode.Disposable {
 			model = new PullRequestModel(this._telemetry, this, this.remote, pullRequest);
 			model.onDidInvalidate(() => this.getPullRequest(pullRequest.number));
 			this._pullRequestModels.set(pullRequest.number, model);
+			this._onDidAddPullRequest.fire(model);
 		}
 
 		return model;
@@ -718,7 +730,7 @@ export class GitHubRepository implements vscode.Disposable {
 
 			return new IssueModel(this, remote, parseGraphQLPullRequest(data, this));
 		} catch (e) {
-			Logger.appendLine(`GithubRepository> Unable to fetch PR: ${e}`);
+			Logger.appendLine(`GithubRepository> Unable to fetch issue: ${e}`);
 			return;
 		}
 	}

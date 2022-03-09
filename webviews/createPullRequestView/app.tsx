@@ -5,34 +5,41 @@
 
 import React, { useContext, useEffect, useRef, useState } from 'react';
 import { render } from 'react-dom';
-import PullRequestContext, { CreateParams, RemoteInfo } from '../common/createContext';
+import { CreateParams, RemoteInfo } from '../../common/views';
+import PullRequestContext from '../common/createContext';
 import { ErrorBoundary } from '../common/errorBoundary';
 import { gitCompareIcon, repoIcon } from '../components/icon';
 
 export const RemoteSelect = ({ onChange, defaultOption, repos }:
-	{ onChange: (owner: string, repositoryName: string) => Promise<void>, defaultOption: string, repos: RemoteInfo[] }) => {
+	{ onChange: (owner: string, repositoryName: string) => Promise<void>, defaultOption: string | undefined, repos: RemoteInfo[] }) => {
+	let caseCorrectedDefaultOption: string | undefined;
+	const options = repos.map(param => {
+		const value = param.owner + '/' + param.repositoryName;
+		const label = `${param.owner}/${param.repositoryName}`;
+		if (label.toLowerCase() === defaultOption) {
+			caseCorrectedDefaultOption = label;
+		}
+		return <option
+			key={value}
+			value={value}>
+			{label}
+		</option>;
+	});
+
 	return <ErrorBoundary>
 		<div className='wrapper flex'>
-			{repoIcon}<select value={defaultOption} onChange={(e) => {
+			{repoIcon}<select value={caseCorrectedDefaultOption ?? defaultOption} onChange={(e) => {
 				const [owner, repositoryName] = e.currentTarget.value.split('/');
 				onChange(owner, repositoryName);
 			}}>
-				{repos.map(param => {
-					const value = param.owner + '/' + param.repositoryName;
-
-					return <option
-						key={value}
-						value={value}>
-						{param.owner}/{param.repositoryName}
-					</option>;
-				})}
+				{options}
 			</select>
 		</div>
 	</ErrorBoundary>;
 };
 
 export const BranchSelect = ({ onChange, defaultOption, branches }:
-	{ onChange: (branch: string) => void, defaultOption: string, branches: string[] }) => {
+	{ onChange: (branch: string) => void, defaultOption: string | undefined, branches: string[] }) => {
 	return <ErrorBoundary>
 		<div className='wrapper flex'>
 			{gitCompareIcon}<select value={defaultOption} onChange={(e) => onChange(e.currentTarget.value)}>
@@ -91,7 +98,7 @@ export function main() {
 						<span className='input-label'>Merge changes from</span>
 						<RemoteSelect onChange={ctx.changeCompareRemote}
 							defaultOption={`${params.compareRemote?.owner}/${params.compareRemote?.repositoryName}`}
-							repos={params.availableRemotes} />
+							repos={params.availableCompareRemotes} />
 
 						<BranchSelect onChange={updateCompareBranch} defaultOption={params.compareBranch} branches={params.branchesForCompare} />
 					</div>
@@ -100,7 +107,7 @@ export function main() {
 						<span className='input-label'>into</span>
 						<RemoteSelect onChange={ctx.changeBaseRemote}
 							defaultOption={`${params.baseRemote?.owner}/${params.baseRemote?.repositoryName}`}
-							repos={params.availableRemotes} />
+							repos={params.availableBaseRemotes} />
 
 						<BranchSelect onChange={updateBaseBranch} defaultOption={params.baseBranch} branches={params.branchesForRemote} />
 					</div>

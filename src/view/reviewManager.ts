@@ -8,7 +8,7 @@ import * as vscode from 'vscode';
 import type { Branch, Repository } from '../api/api';
 import { GitErrorCodes } from '../api/api1';
 import { openDescription } from '../commands';
-import { DiffChangeType, parseDiff } from '../common/diffHunk';
+import { DiffChangeType } from '../common/diffHunk';
 import { GitChangeType, InMemFileChange, SlimFileChange } from '../common/file';
 import Logger from '../common/logger';
 import { parseRepositoryRemotes, Remote } from '../common/remote';
@@ -179,6 +179,10 @@ export class ReviewManager {
 		return this._repository;
 	}
 
+	get reviewModel() {
+		return this._reviewModel;
+	}
+
 	private pollForStatusChange() {
 		setTimeout(async () => {
 			if (!this._validateStatusInProgress) {
@@ -192,8 +196,9 @@ export class ReviewManager {
 		const branch = this._repository.state.HEAD;
 		if (branch) {
 			const remote = branch.upstream ? branch.upstream.remote : null;
+			const remoteBranch = branch.upstream ? branch.upstream.name : branch.name;
 			if (remote) {
-				await this._repository.fetch(remote, this._repository.state.HEAD?.name);
+				await this._repository.fetch(remote, remoteBranch);
 				const canShowNotification = !this._context.globalState.get<boolean>(NEVER_SHOW_PULL_NOTIFICATION, false);
 				if (canShowNotification && !this._updateMessageShown &&
 					((this._lastCommitSha && (pr.head.sha !== this._lastCommitSha))
@@ -247,6 +252,8 @@ export class ReviewManager {
 
 	private async validateState(silent: boolean, openDiff: boolean) {
 		Logger.appendLine('Review> Validating state...');
+		const oldLastCommitSha = this._lastCommitSha;
+		this._lastCommitSha = undefined;
 		await this._folderRepoManager.updateRepositories(false);
 
 		if (!this._repository.state.HEAD) {
@@ -261,7 +268,7 @@ export class ReviewManager {
 			Logger.appendLine(`Review> no matching pull request metadata found for current branch ${branch.name}`);
 			const metadataFromGithub = await this._folderRepoManager.getMatchingPullRequestMetadataFromGitHub();
 			if (metadataFromGithub) {
-				PullRequestGitHelper.associateBranchWithPullRequest(
+				await PullRequestGitHelper.associateBranchWithPullRequest(
 					this._repository,
 					metadataFromGithub.model,
 					branch.name!,
@@ -278,7 +285,7 @@ export class ReviewManager {
 			return;
 		}
 
-		const hasPushedChanges = branch.commit !== this._lastCommitSha && branch.ahead === 0 && branch.behind === 0;
+		const hasPushedChanges = branch.commit !== oldLastCommitSha && branch.ahead === 0 && branch.behind === 0;
 		if (this._prNumber === matchingPullRequestMetadata.prNumber && !hasPushedChanges) {
 			vscode.commands.executeCommand('pr.refreshList');
 			return;
@@ -297,7 +304,6 @@ export class ReviewManager {
 		);
 		this.clear(false);
 		this._prNumber = matchingPullRequestMetadata.prNumber;
-		this._lastCommitSha = undefined;
 
 		const { owner, repositoryName } = matchingPullRequestMetadata;
 		Logger.appendLine('Review> Resolving pull request');
@@ -312,15 +318,16 @@ export class ReviewManager {
 			return;
 		}
 
-		const useReviewConfiguration = vscode.workspace.getConfiguration(PR_SETTINGS_NAMESPACE).get<string[]>(USE_REVIEW_MODE, []);
+		const useReviewConfiguration = vscode.workspace.getConfiguration(PR_SETTINGS_NAMESPACE)
+			.get<{ merged: boolean, closed: boolean }>(USE_REVIEW_MODE, { merged: true, closed: false });
 
-		if (pr.isClosed && !useReviewConfiguration.includes('closed')) {
+		if (pr.isClosed && !useReviewConfiguration.closed) {
 			this.clear(true);
 			Logger.appendLine('Review> This PR is closed');
 			return;
 		}
 
-		if (pr.isMerged && !useReviewConfiguration.includes('merged')) {
+		if (pr.isMerged && !useReviewConfiguration.merged) {
 			this.clear(true);
 			Logger.appendLine('Review> This PR is merged');
 			return;
@@ -511,10 +518,7 @@ export class ReviewManager {
 
 	private async initializePullRequestData(pr: PullRequestModel & IResolvedPullRequestModel): Promise<void> {
 		try {
-			const data = await pr.getFileChangesInfo();
-			const mergeBase = pr.mergeBase || pr.base.sha;
-
-			const contentChanges = await parseDiff(data, this._repository, mergeBase!);
+			const contentChanges = await pr.getFileChangesInfo(this._repository);
 			this._reviewModel.localFileChanges = await this.getLocalChangeNodes(pr, contentChanges);
 			await Promise.all([pr.initializeReviewComments(), pr.initializeReviewThreadCache(), pr.initializePullRequestFileViewState()]);
 			const outdatedComments = pr.comments.filter(comment => !comment.position);
@@ -575,12 +579,12 @@ export class ReviewManager {
 		if (this._folderRepoManager.activePullRequest?.reviewThreadsCacheReady && this._reviewModel.hasLocalFileChanges) {
 			await this.doRegisterCommentController();
 		} else {
-			const changeThreadsDisposable: vscode.Disposable | undefined =
-				this._folderRepoManager.activePullRequest?.onDidChangeReviewThreads(async () => {
-					if (changeThreadsDisposable) {
-						changeThreadsDisposable.dispose();
-					}
+			const changedLocalFilesChangesDisposable: vscode.Disposable | undefined =
+				this._reviewModel.onDidChangeLocalFileChanges(async () => {
 					if (this._folderRepoManager.activePullRequest?.reviewThreadsCache && this._reviewModel.hasLocalFileChanges) {
+						if (changedLocalFilesChangesDisposable) {
+							changedLocalFilesChangesDisposable.dispose();
+						}
 						await this.doRegisterCommentController();
 					}
 				});
@@ -635,7 +639,7 @@ export class ReviewManager {
 				vscode.window.showErrorMessage(
 					'Your local changes would be overwritten by checkout, please commit your changes or stash them before you switch branches',
 				);
-			} else if ((e.stderr as string).startsWith('fatal: couldn\'t find remote ref')) {
+			} else if ((e.stderr as string)?.startsWith('fatal: couldn\'t find remote ref')) {
 				vscode.window.showErrorMessage('The remote branch for this pull request has been deleted. The pull request cannot be checked out.');
 			} else {
 				vscode.window.showErrorMessage(formatError(e));

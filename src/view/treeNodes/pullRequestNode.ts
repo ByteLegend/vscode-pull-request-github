@@ -5,11 +5,12 @@
 
 import * as vscode from 'vscode';
 import { getCommentingRanges } from '../../common/commentingRanges';
-import { DiffChangeType, getModifiedContentFromDiffHunk, parseDiff } from '../../common/diffHunk';
+import { DiffChangeType, getModifiedContentFromDiffHunk } from '../../common/diffHunk';
 import { GitChangeType, SlimFileChange } from '../../common/file';
 import Logger from '../../common/logger';
+import { FILE_LIST_LAYOUT } from '../../common/settingKeys';
 import { fromPRUri, resolvePath, toPRUri } from '../../common/uri';
-import { FolderRepositoryManager } from '../../github/folderRepositoryManager';
+import { FolderRepositoryManager, SETTINGS_NAMESPACE } from '../../github/folderRepositoryManager';
 import { IResolvedPullRequestModel, PullRequestModel } from '../../github/pullRequestModel';
 import { getInMemPRFileSystemProvider } from '../inMemPRContentProvider';
 import { DescriptionNode } from './descriptionNode';
@@ -85,7 +86,7 @@ export class PRNode extends TreeNode implements vscode.CommentingRangeProvider {
 			await this.pullRequestModel.validateDraftMode();
 
 			const result: TreeNode[] = [descriptionNode];
-			const layout = vscode.workspace.getConfiguration('githubPullRequests').get<string>('fileListLayout');
+			const layout = vscode.workspace.getConfiguration(SETTINGS_NAMESPACE).get<string>(FILE_LIST_LAYOUT);
 			if (layout === 'tree') {
 				// tree view
 				const dirNode = new DirectoryTreeNode(this, '');
@@ -159,15 +160,13 @@ export class PRNode extends TreeNode implements vscode.CommentingRangeProvider {
 			return [];
 		}
 
-		const data = await this.pullRequestModel.getFileChangesInfo();
+		const rawChanges = await this.pullRequestModel.getFileChangesInfo(this._folderReposManager.repository);
 
 		// Merge base is set as part of getPullRequestFileChangesInfo
 		const mergeBase = this.pullRequestModel.mergeBase;
 		if (!mergeBase) {
 			return [];
 		}
-
-		const rawChanges = await parseDiff(data, this._folderReposManager.repository, mergeBase);
 
 		return rawChanges.map(change => {
 			const headCommit = this.pullRequestModel.head!.sha;

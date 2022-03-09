@@ -16,6 +16,7 @@ import { GitHubFileChangeNode } from './treeNodes/fileChangeNode';
 import { TreeNode } from './treeNodes/treeNode';
 
 export const GITHUB_FILE_SCHEME = 'githubpr';
+export const FILECHANGE_FILE_SCHEME = 'filechange';
 
 export class CompareChangesTreeProvider implements vscode.TreeDataProvider<TreeNode> {
 	private _view: vscode.TreeView<TreeNode>;
@@ -84,9 +85,11 @@ export class CompareChangesTreeProvider implements vscode.TreeDataProvider<TreeN
 		}
 	}
 
-	async updateCompareBranch(branch: string): Promise<void> {
-		await this.updateHasUpstream(branch);
-		this.compareBranchName = branch;
+	async updateCompareBranch(branch?: string): Promise<void> {
+		if (branch) {
+			await this.updateHasUpstream(branch);
+			this.compareBranchName = branch;
+		}
 		this._onDidChangeTreeData.fire();
 	}
 

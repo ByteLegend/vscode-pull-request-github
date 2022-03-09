@@ -15,19 +15,21 @@ import Logger from './common/logger';
 import * as PersistentState from './common/persistentState';
 import { Resource } from './common/resources';
 import { SessionState } from './common/sessionState';
+import { FILE_LIST_LAYOUT } from './common/settingKeys';
 import { TemporaryState } from './common/temporaryState';
 import { handler as uriHandler } from './common/uri';
 import { EXTENSION_ID, FOCUS_REVIEW_MODE } from './constants';
 import { createExperimentationService, ExperimentationTelemetry } from './experimentationService';
 import { setSyncedKeys } from './extensionState';
 import { CredentialStore } from './github/credentials';
-import { FolderRepositoryManager } from './github/folderRepositoryManager';
+import { FolderRepositoryManager, SETTINGS_NAMESPACE } from './github/folderRepositoryManager';
 import { RepositoriesManager } from './github/repositoriesManager';
 import { registerBuiltinGitProvider, registerLiveShareGitProvider } from './gitProviders/api';
 import { GitHubContactServiceProvider } from './gitProviders/GitHubContactServiceProvider';
 import { GitLensIntegration } from './integrations/gitlens/gitlensImpl';
 import { IssueFeatureRegistrar } from './issues/issueFeatureRegistrar';
 import { FileTypeDecorationProvider } from './view/fileTypeDecorationProvider';
+import { getInMemPRFileSystemProvider } from './view/inMemPRContentProvider';
 import { PullRequestChangesTreeDataProvider } from './view/prChangesTreeDataProvider';
 import { PullRequestsTreeDataProvider } from './view/prsTreeDataProvider';
 import { ReviewManager, ShowPullRequest } from './view/reviewManager';
@@ -103,7 +105,6 @@ async function init(
 	);
 
 	context.subscriptions.push(vscode.window.registerUriHandler(uriHandler));
-	context.subscriptions.push(new FileTypeDecorationProvider());
 
 	// Sort the repositories to match folders in a multiroot workspace (if possible).
 	const workspaceFolders = vscode.workspace.workspaceFolders;
@@ -147,7 +148,9 @@ async function init(
 	const reviewManagers = folderManagers.map(
 		folderManager => new ReviewManager(context, folderManager.repository, folderManager, telemetry, changesTree, showPRController, sessionState),
 	);
-	const reviewsManager = new ReviewsManager(context, reposManager, reviewManagers, tree, changesTree, telemetry, git);
+	context.subscriptions.push(new FileTypeDecorationProvider(reposManager, reviewManagers));
+
+	const reviewsManager = new ReviewsManager(context, reposManager, reviewManagers, tree, changesTree, telemetry, credentialStore, git);
 	context.subscriptions.push(reviewsManager);
 
 	git.onDidChangeState(() => {
@@ -156,8 +159,7 @@ async function init(
 	});
 
 	git.onDidOpenRepository(repo => {
-		const disposable = repo.state.onDidChange(() => {
-			Logger.appendLine(`Repo state for ${repo.rootUri} changed.`);
+		function addRepo() {
 			// Make sure we don't already have a folder manager for this repo.
 			const existing = reposManager.getManagerForFile(repo.rootUri);
 			if (existing) {
@@ -177,6 +179,11 @@ async function init(
 			);
 			reviewManagers.push(newReviewManager);
 			tree.refresh();
+		}
+		addRepo();
+		const disposable = repo.state.onDidChange(() => {
+			Logger.appendLine(`Repo state for ${repo.rootUri} changed.`);
+			addRepo();
 			disposable.dispose();
 		});
 	});
@@ -201,7 +208,7 @@ async function init(
 	setSyncedKeys(context);
 	registerCommands(context, sessionState, reposManager, reviewManagers, telemetry, credentialStore, tree);
 
-	const layout = vscode.workspace.getConfiguration('githubPullRequests').get<string>('fileListLayout');
+	const layout = vscode.workspace.getConfiguration(SETTINGS_NAMESPACE).get<string>(FILE_LIST_LAYOUT);
 	await vscode.commands.executeCommand('setContext', 'fileListLayout:flat', layout === 'flat');
 
 	const issuesFeatures = new IssueFeatureRegistrar(git, reposManager, reviewManagers, context, telemetry);
@@ -299,6 +306,7 @@ async function deferredActivate(context: vscode.ExtensionContext, apiImpl: GitAp
 	Logger.debug('Creating tree view.', 'Activation');
 	const prTree = new PullRequestsTreeDataProvider(telemetry);
 	context.subscriptions.push(prTree);
+	context.subscriptions.push(vscode.workspace.registerFileSystemProvider('pr', getInMemPRFileSystemProvider(), { isReadonly: true }));
 
 	Logger.appendLine('Looking for git repository');
 

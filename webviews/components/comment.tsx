@@ -10,7 +10,6 @@ import { PullRequest, ReviewType } from '../common/cache';
 import PullRequestContext from '../common/context';
 import emitter from '../common/events';
 import { useStateProp } from '../common/hooks';
-import { escapeMarkdownSyntaxTokens } from '../common/markdown';
 import { Dropdown } from './dropdown';
 import { commentIcon, deleteIcon, editIcon } from './icon';
 import { nbsp, Spaced } from './space';
@@ -35,7 +34,7 @@ export function CommentView(comment: Props) {
 		return React.cloneElement(comment.headerInEditMode ? <CommentBox for={comment} /> : <></>, {}, [
 			<EditComment
 				id={id}
-				body={currentDraft || escapeMarkdownSyntaxTokens(bodyMd)}
+				body={currentDraft || bodyMd}
 				onCancel={() => {
 					if (pr.pendingCommentDrafts) {
 						delete pr.pendingCommentDrafts[id];
@@ -361,7 +360,7 @@ const COMMENT_METHODS = {
 };
 
 export const AddCommentSimple = (pr: PullRequest) => {
-	const { updatePR, requestChanges, approve, comment, openOnGitHub } = useContext(PullRequestContext);
+	const { updatePR, requestChanges, approve, submit, openOnGitHub } = useContext(PullRequestContext);
 	const textareaRef = useRef<HTMLTextAreaElement>();
 
 	async function submitAction(selected: string): Promise<void> {
@@ -379,7 +378,7 @@ export const AddCommentSimple = (pr: PullRequest) => {
 				await approve(value);
 				break;
 			default:
-				await comment(value);
+				await submit(value);
 		}
 		updatePR({ pendingCommentText: '', pendingReviewType: undefined });
 	}
@@ -389,9 +388,9 @@ export const AddCommentSimple = (pr: PullRequest) => {
 	};
 
 	const availableActions = pr.isAuthor
-		? { comment: 'Comment' }
+		? { comment: 'Comment and Submit' }
 		: pr.continueOnGitHub
-		? { comment: 'Comment', approve: 'Approve on github.com', requestChanges: 'Request changes on github.com' }
+		? { comment: 'Comment and Submit', approve: 'Approve on github.com', requestChanges: 'Request changes on github.com' }
 		: COMMENT_METHODS;
 
 	return (
