@@ -11,11 +11,12 @@ import { Repository } from './api/api';
 import { GitApiImpl } from './api/api1';
 import { registerByteLegendGitProvider } from './bytelegend/utils';
 import { registerCommands } from './commands';
+import { commands } from './common/executeCommands';
 import Logger from './common/logger';
 import * as PersistentState from './common/persistentState';
 import { Resource } from './common/resources';
 import { SessionState } from './common/sessionState';
-import { FILE_LIST_LAYOUT } from './common/settingKeys';
+import { BRANCH_PUBLISH, FILE_LIST_LAYOUT, PR_SETTINGS_NAMESPACE } from './common/settingKeys';
 import { TemporaryState } from './common/temporaryState';
 import { handler as uriHandler } from './common/uri';
 import { EXTENSION_ID, FOCUS_REVIEW_MODE } from './constants';
@@ -66,7 +67,11 @@ async function init(
 	context.subscriptions.push(
 		git.onDidPublish(async e => {
 			// Only notify on branch publish events
-			if (!e.branch || PersistentState.fetch(PROMPTS_SCOPE, PROMPT_TO_CREATE_PR_ON_PUBLISH_KEY) === false) {
+			if (!e.branch) {
+				return;
+			}
+
+			if (vscode.workspace.getConfiguration(PR_SETTINGS_NAMESPACE).get<'ask' | 'never' | undefined>(BRANCH_PUBLISH) !== 'ask') {
 				return;
 			}
 
@@ -99,7 +104,7 @@ async function init(
 			if (result === create) {
 				reviewManager?.createPullRequest(e.branch);
 			} else if (result === dontShowAgain) {
-				PersistentState.store(PROMPTS_SCOPE, PROMPT_TO_CREATE_PR_ON_PUBLISH_KEY, false);
+				await vscode.workspace.getConfiguration(PR_SETTINGS_NAMESPACE).update(BRANCH_PUBLISH, 'never', vscode.ConfigurationTarget.Global);
 			}
 		}),
 	);
@@ -177,7 +182,7 @@ async function init(
 				showPRController,
 				sessionState
 			);
-			reviewManagers.push(newReviewManager);
+			reviewsManager.addReviewManager(newReviewManager);
 			tree.refresh();
 		}
 		addRepo();
@@ -190,16 +195,7 @@ async function init(
 
 	git.onDidCloseRepository(repo => {
 		reposManager.removeRepo(repo);
-
-		const reviewManagerIndex = reviewManagers.findIndex(
-			manager => manager.repository.rootUri.toString() === repo.rootUri.toString(),
-		);
-		if (reviewManagerIndex) {
-			const manager = reviewManagers[reviewManagerIndex];
-			reviewManagers.splice(reviewManagerIndex);
-			manager.dispose();
-		}
-
+		reviewsManager.removeReviewManager(repo);
 		tree.refresh();
 	});
 
@@ -244,7 +240,7 @@ export async function activate(context: vscode.ExtensionContext): Promise<GitApi
 	const showPRController = new ShowPullRequest();
 	vscode.commands.registerCommand('github.api.preloadPullRequest', async (shouldShow: boolean) => {
 		await vscode.commands.executeCommand('setContext', FOCUS_REVIEW_MODE, true);
-		await vscode.commands.executeCommand('github:activePullRequest:welcome.focus');
+		await commands.focusView('github:activePullRequest:welcome');
 		showPRController.shouldShow = shouldShow;
 	});
 	const openDiff = vscode.workspace.getConfiguration('git').get('openDiffOnClick', true);
@@ -276,6 +272,11 @@ async function doRegisterBuiltinGitProvider(context: vscode.ExtensionContext, cr
 async function deferredActivate(context: vscode.ExtensionContext, apiImpl: GitApiImpl, showPRController: ShowPullRequest) {
 	Logger.debug('Initializing state.', 'Activation');
 	PersistentState.init(context);
+	// Migrate from state to setting
+	if (PersistentState.fetch(PROMPTS_SCOPE, PROMPT_TO_CREATE_PR_ON_PUBLISH_KEY) === false) {
+		await vscode.workspace.getConfiguration(PR_SETTINGS_NAMESPACE).update(BRANCH_PUBLISH, 'never', vscode.ConfigurationTarget.Global);
+		PersistentState.store(PROMPTS_SCOPE, PROMPT_TO_CREATE_PR_ON_PUBLISH_KEY, true);
+	}
 	TemporaryState.init(context);
 	Logger.debug('Creating credential store.', 'Activation');
 	const credentialStore = new CredentialStore(telemetry);

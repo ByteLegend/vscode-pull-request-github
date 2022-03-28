@@ -16,7 +16,7 @@
 	"version": "0.38.0",
 	"publisher": "GitHub",
 	"engines": {
-		"vscode": "^1.65.0"
+		"vscode": "^1.66.0"
 	},
 	"categories": [
 		"Other"
@@ -190,6 +190,19 @@
 					],
 					"default": "ask",
 					"description": "Default handler for terminal links."
+				},
+				"githubPullRequests.createOnPublishBranch": {
+					"type": "string",
+					"enum": [
+						"never",
+						"ask"
+					],
+					"enumDescriptions": [
+						"Never create a pull request when a branch is published.",
+						"Ask if you want to create a pull request when a branch is published."
+					],
+					"default": "ask",
+					"description": "Create a pull request when a branch is published."
 				},
 				"githubPullRequests.commentExpandState": {
 					"type": "string",
@@ -689,6 +702,11 @@
 			{
 				"command": "issue.copyGithubPermalink",
 				"title": "Copy GitHub Permalink",
+				"category": "GitHub Issues"
+			},
+			{
+				"command": "issue.copyGithubHeadLink",
+				"title": "Copy GitHub Head Link",
 				"category": "GitHub Issues"
 			},
 			{
@@ -1361,12 +1379,12 @@
 			"scm/title": [
 				{
 					"command": "review.suggestDiff",
-					"when": "scmProvider =~ /^git|^remoteHub:/ && github:inReviewMode",
+					"when": "scmProvider =~ /^git|^remoteHub:github/ && github:inReviewMode",
 					"group": "inline"
 				},
 				{
 					"command": "pr.create",
-					"when": "scmProvider =~ /^git|^remoteHub:/ && !github:inReviewMode",
+					"when": "scmProvider =~ /^git|^remoteHub:github/ && !github:inReviewMode",
 					"group": "navigation"
 				}
 			],
@@ -1461,6 +1479,10 @@
 				{
 					"command": "issue.copyMarkdownGithubPermalink",
 					"when": "gitHubOpenRepositoryCount != 0"
+				},
+				{
+					"command": "issue.copyGithubHeadLink",
+					"when": "gitHubOpenRepositoryCount != 0"
 				}
 			],
 			"editor/title/context": [
@@ -1468,6 +1490,11 @@
 					"command": "issue.copyGithubPermalink",
 					"when": "gitHubOpenRepositoryCount != 0",
 					"group": "1_cutcopypaste@10"
+				},
+				{
+					"command": "issue.copyGithubHeadLink",
+					"when": "gitHubOpenRepositoryCount != 0",
+					"group": "1_cutcopypaste@11"
 				}
 			],
 			"explorer/context": [
@@ -1475,6 +1502,11 @@
 					"command": "issue.copyGithubPermalink",
 					"when": "gitHubOpenRepositoryCount != 0",
 					"group": "5_cutcopypaste@10"
+				},
+				{
+					"command": "issue.copyGithubHeadLink",
+					"when": "gitHubOpenRepositoryCount != 0",
+					"group": "5_cutcopypaste@11"
 				}
 			],
 			"menuBar/edit/copy": [
@@ -1490,7 +1522,7 @@
 			"remoteHub/pullRequest": [
 				{
 					"command": "pr.create",
-					"when": "scmProvider =~ /^remoteHub:/",
+					"when": "scmProvider =~ /^remoteHub:github/",
 					"group": "1_modification@0"
 				}
 			]
@@ -1501,7 +1533,8 @@
 				"defaults": {
 					"dark": "#ffffff48",
 					"light": "#00000048",
-					"highContrast": "editor.foreground"
+					"highContrast": "editor.foreground",
+					"highContrastLight": "editor.foreground"
 				},
 				"description": "The color used for the assignees and labels fields in a new issue editor."
 			},
@@ -1510,7 +1543,8 @@
 				"defaults": {
 					"dark": "#22863a",
 					"light": "#22863a",
-					"highContrast": "editor.foreground"
+					"highContrast": "editor.foreground",
+					"highContrastLight": "editor.foreground"
 				},
 				"description": "The color used for indicating that an issue is open."
 			},
@@ -1519,7 +1553,8 @@
 				"defaults": {
 					"dark": "#cb2431",
 					"light": "#cb2431",
-					"highContrast": "editor.foreground"
+					"highContrast": "editor.foreground",
+					"highContrastLight": "editor.foreground"
 				},
 				"description": "The color used for indicating that an issue is closed."
 			}
