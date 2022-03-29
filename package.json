@@ -1518,13 +1518,6 @@
 					"command": "issue.copyMarkdownGithubPermalink",
 					"when": "gitHubOpenRepositoryCount != 0"
 				}
-			],
-			"remoteHub/pullRequest": [
-				{
-					"command": "pr.create",
-					"when": "scmProvider =~ /^remoteHub:github/",
-					"group": "1_modification@0"
-				}
 			]
 		},
 		"colors": [
