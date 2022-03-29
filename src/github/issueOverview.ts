@@ -109,7 +109,7 @@ export class IssueOverviewPanel<TItem extends IssueModel = IssueModel> extends W
 	}
 
 	public async refreshPanel(): Promise<void> {
-		if (this._panel && this._panel.visible) {
+		if (this._panel && this._panel.visible && this._item) {
 			this.update(this._folderRepositoryManager, this._item);
 		}
 	}
