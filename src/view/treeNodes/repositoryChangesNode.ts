@@ -4,6 +4,7 @@
  *--------------------------------------------------------------------------------------------*/
 
 import * as vscode from 'vscode';
+import Logger, { PR_TREE } from '../../common/logger';
 import { FolderRepositoryManager } from '../../github/folderRepositoryManager';
 import { PullRequestModel } from '../../github/pullRequestModel';
 import { ReviewModel } from '../reviewModel';
@@ -52,7 +53,7 @@ export class RepositoryChangesNode extends DescriptionNode implements vscode.Tre
 
 	private revealActiveEditorInTree(activeEditorUri: string | undefined): void {
 		if (this.parent.view.visible && activeEditorUri) {
-			const matchingFile = this._reviewModel.localFileChanges.find(change => change.filePath.toString() === activeEditorUri);
+			const matchingFile = this._reviewModel.localFileChanges.find(change => change.changeModel.filePath.toString() === activeEditorUri);
 			if (matchingFile) {
 				this.reveal(matchingFile, { select: true });
 			}
@@ -61,6 +62,7 @@ export class RepositoryChangesNode extends DescriptionNode implements vscode.Tre
 
 	async getChildren(): Promise<TreeNode[]> {
 		if (!this._filesCategoryNode || !this._commitsCategoryNode) {
+			Logger.appendLine(`Creating file and commit nodes for PR #${this.pullRequestModel.number}`, PR_TREE);
 			this._filesCategoryNode = new FilesCategoryNode(this.parent, this._reviewModel, this._pullRequest);
 			this._commitsCategoryNode = new CommitsNode(
 				this.parent,

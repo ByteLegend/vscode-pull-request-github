@@ -6,12 +6,15 @@
 import * as path from 'path';
 import * as vscode from 'vscode';
 import { getGitChangeType } from '../../common/diffHunk';
+import { FILE_LIST_LAYOUT } from '../../common/settingKeys';
 import { toReviewUri } from '../../common/uri';
 import { OctokitCommon } from '../../github/common';
-import { FolderRepositoryManager } from '../../github/folderRepositoryManager';
+import { FolderRepositoryManager, SETTINGS_NAMESPACE } from '../../github/folderRepositoryManager';
 import { IResolvedPullRequestModel, PullRequestModel } from '../../github/pullRequestModel';
+import { GitFileChangeModel } from '../fileChangeModel';
+import { DirectoryTreeNode } from './directoryTreeNode';
 import { GitFileChangeNode } from './fileChangeNode';
-import { TreeNode, TreeNodeParent } from './treeNode';
+import { LabelOnlyNode, TreeNode, TreeNodeParent } from './treeNode';
 
 export class CommitNode extends TreeNode implements vscode.TreeItem {
 	public sha: string;
@@ -50,13 +53,16 @@ export class CommitNode extends TreeNode implements vscode.TreeItem {
 	async getChildren(): Promise<TreeNode[]> {
 		const fileChanges = (await this.pullRequest.getCommitChangedFiles(this.commit)) ?? [];
 
+		if (fileChanges.length === 0) {
+			return [new LabelOnlyNode('No changed files')];
+		}
+
 		const fileChangeNodes = fileChanges.map(change => {
 			const fileName = change.filename!;
 			const uri = vscode.Uri.parse(path.posix.join(`commit~${this.commit.sha.substr(0, 8)}`, fileName));
-			const fileChangeNode = new GitFileChangeNode(
-				this,
+			const changeModel = new GitFileChangeModel(
 				this.pullRequestManager,
-				this.pullRequest as (PullRequestModel & IResolvedPullRequestModel),
+				this.pullRequest,
 				{
 					status: getGitChangeType(change.status!),
 					fileName,
@@ -80,7 +86,12 @@ export class CommitNode extends TreeNode implements vscode.TreeItem {
 					{ base: true },
 					this.pullRequestManager.repository.rootUri,
 				),
-				this.commit.sha,
+				this.commit.sha);
+			const fileChangeNode = new GitFileChangeNode(
+				this,
+				this.pullRequestManager,
+				this.pullRequest as (PullRequestModel & IResolvedPullRequestModel),
+				changeModel,
 				this.isCurrent
 			);
 
@@ -89,6 +100,23 @@ export class CommitNode extends TreeNode implements vscode.TreeItem {
 			return fileChangeNode;
 		});
 
-		return Promise.resolve(fileChangeNodes);
+		let result: TreeNode[] = [];
+		const layout = vscode.workspace.getConfiguration(SETTINGS_NAMESPACE).get<string>(FILE_LIST_LAYOUT);
+		if (layout === 'tree') {
+			// tree view
+			const dirNode = new DirectoryTreeNode(this, '');
+			fileChangeNodes.forEach(f => dirNode.addFile(f));
+			dirNode.finalize();
+			if (dirNode.label === '') {
+				// nothing on the root changed, pull children to parent
+				result.push(...dirNode.children);
+			} else {
+				result.push(dirNode);
+			}
+		} else {
+			// flat view
+			result = fileChangeNodes;
+		}
+		return Promise.resolve(result);
 	}
 }

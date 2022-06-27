@@ -32,6 +32,9 @@ import { MockExtensionContext } from '../mocks/mockExtensionContext';
 import { MockSessionState } from '../mocks/mockSessionState';
 import { ReviewModel } from '../../view/reviewModel';
 import { Resource } from '../../common/resources';
+import { RepositoriesManager } from '../../github/repositoriesManager';
+import { GitFileChangeModel } from '../../view/fileChangeModel';
+import { WebviewViewCoordinator } from '../../view/webviewViewCoordinator';
 const schema = require('../../github/queries.gql');
 
 const protocol = new Protocol('https://github.com/github/test.git');
@@ -66,10 +69,12 @@ describe('ReviewCommentController', function () {
 
 		provider = new PullRequestsTreeDataProvider(telemetry);
 		const context = new MockExtensionContext();
+		const activePrViewCoordinator = new WebviewViewCoordinator(context);
 		Resource.initialize(context);
-		manager = new FolderRepositoryManager(context, repository, telemetry, new GitApiImpl(), credentialStore, new MockSessionState());
-		const tree = new PullRequestChangesTreeDataProvider(context);
-		reviewManager = new ReviewManager(context, repository, manager, telemetry, tree, new ShowPullRequest(), new MockSessionState());
+		const gitApiImpl = new GitApiImpl();
+		manager = new FolderRepositoryManager(context, repository, telemetry, gitApiImpl, credentialStore, new MockSessionState());
+		const tree = new PullRequestChangesTreeDataProvider(context, gitApiImpl, new RepositoriesManager([manager], credentialStore, telemetry, new MockSessionState()));
+		reviewManager = new ReviewManager(context, repository, manager, telemetry, tree, new ShowPullRequest(), new MockSessionState(), activePrViewCoordinator);
 		sinon.stub(manager, 'createGitHubRepository').callsFake((r, cStore) => {
 			return new MockGitHubRepository(r, cStore, telemetry, sinon);
 		});
@@ -93,8 +98,7 @@ describe('ReviewCommentController', function () {
 	});
 
 	function createLocalFileChange(uri: vscode.Uri, fileName: string, rootUri: vscode.Uri): GitFileChangeNode {
-		return new GitFileChangeNode(
-			provider,
+		const gitFileChangeModel = new GitFileChangeModel(
 			manager,
 			activePullRequest,
 			{
@@ -128,7 +132,14 @@ describe('ReviewCommentController', function () {
 			},
 			uri,
 			toReviewUri(uri, fileName, undefined, '1', false, { base: true }, rootUri),
-			'abcd',
+			'abcd'
+		);
+
+		return new GitFileChangeNode(
+			provider,
+			manager,
+			activePullRequest,
+			gitFileChangeModel
 		);
 	}
 
@@ -140,7 +151,7 @@ describe('ReviewCommentController', function () {
 			comments: [],
 			collapsibleState: vscode.CommentThreadCollapsibleState.Expanded,
 			label: 'Start discussion',
-			isResolved: false,
+			state: vscode.CommentThreadState.Unresolved,
 			canReply: false,
 			dispose: () => {},
 		};
@@ -164,8 +175,10 @@ describe('ReviewCommentController', function () {
 					viewerCanUnresolve: false,
 					path: fileName,
 					diffSide: DiffSide.RIGHT,
-					line: 372,
-					originalLine: 372,
+					startLine: 372,
+					endLine: 372,
+					originalStartLine: 372,
+					originalEndLine: 372,
 					isOutdated: false,
 					comments: [
 						{
@@ -252,6 +265,7 @@ describe('ReviewCommentController', function () {
 							body: 'hello world',
 							pullRequestId: activePullRequest.graphNodeId,
 							pullRequestReviewId: undefined,
+							startLine: undefined,
 							line: 22,
 							side: 'RIGHT'
 						}
@@ -266,6 +280,8 @@ describe('ReviewCommentController', function () {
 								viewCanResolve: true,
 								path: fileName,
 								line: 22,
+								startLine: null,
+								originalStartLine: null,
 								originalLine: 22,
 								diffSide: 'RIGHT',
 								isOutdated: false,

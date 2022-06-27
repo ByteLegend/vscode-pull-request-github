@@ -168,7 +168,9 @@ export interface ReviewThread {
 	viewerCanUnresolve: boolean;
 	path: string;
 	diffSide: DiffSide;
+	startLine: number | null;
 	line: number;
+	originalStartLine: number | null;
 	originalLine: number;
 	isOutdated: boolean;
 	comments: {
@@ -349,6 +351,20 @@ export interface UpdatePullRequestResponse {
 	};
 }
 
+export interface ListBranchesResponse {
+	repository: {
+		refs: {
+			nodes: {
+				name: string;
+			}[];
+			pageInfo: {
+				hasNextPage: boolean;
+				endCursor: string;
+			};
+		};
+	};
+}
+
 export interface RefRepository {
 	owner: {
 		login: string;
@@ -417,6 +433,12 @@ export interface PullRequest {
 	};
 	merged: boolean;
 	mergeable: 'MERGEABLE' | 'CONFLICTING' | 'UNKNOWN';
+	mergeStateStatus: 'BEHIND' | 'BLOCKED' | 'CLEAN' | 'DIRTY' | 'HAS_HOOKS' | 'UNKNOWN' | 'UNSTABLE';
+	autoMergeRequest?: {
+		mergeMethod: 'MERGE' | 'REBASE' | 'SQUASH'
+	};
+	viewerCanEnableAutoMerge: boolean;
+	viewerCanDisableAutoMerge: boolean;
 	isDraft?: boolean;
 	suggestedReviewers: SuggestedReviewerResponse[];
 	milestone?: {
@@ -489,6 +511,14 @@ export interface IssuesResponse {
 			};
 		};
 	};
+}
+
+export interface PullRequestsResponse {
+	repository: {
+		pullRequests: {
+			nodes: PullRequest[]
+		}
+	}
 }
 
 export interface MaxIssueResponse {

@@ -147,11 +147,98 @@ fragment ReviewThread on PullRequestReviewThread {
 	path
 	diffSide
 	line
+	startLine
+	originalStartLine
 	originalLine
 	isOutdated
 	comments(first: 100) {
 		nodes {
 			...ReviewComment
+		}
+	}
+}
+
+fragment PullRequestFragment on PullRequest {
+	number
+	url
+	state
+	body
+	bodyHTML
+	title
+	author {
+		login
+		url
+		avatarUrl
+		... on User {
+			email
+		}
+		... on Organization {
+			email
+		}
+	}
+	createdAt
+	updatedAt
+	headRef {
+		...Ref
+	}
+	headRefName
+	headRefOid
+	headRepository {
+		owner {
+			login
+		}
+		url
+	}
+	baseRef {
+		...Ref
+	}
+	baseRefName
+	baseRefOid
+	baseRepository {
+		owner {
+			login
+		}
+		url
+	}
+	labels(first: 50) {
+		nodes {
+			name
+		}
+	}
+	merged
+	mergeable
+	mergeStateStatus
+	autoMergeRequest {
+		mergeMethod
+	}
+	viewerCanEnableAutoMerge
+	viewerCanDisableAutoMerge
+	id
+	databaseId
+	isDraft
+	milestone {
+		title
+		dueOn
+		createdAt
+		id
+	}
+	assignees(first: 10) {
+		nodes {
+			login
+			name
+			avatarUrl
+			url
+			email
+		}
+	}
+	suggestedReviewers {
+		isAuthor
+		isCommenter
+		reviewer {
+			login
+			avatarUrl
+			name
+			url
 		}
 	}
 }
@@ -269,7 +356,9 @@ query PullRequestComments($owner: String!, $name: String!, $number: Int!, $first
 					viewerCanUnresolve
 					path
 					diffSide
+					startLine
 					line
+					originalStartLine
 					originalLine
 					isOutdated
 					comments(first: 100) {
@@ -362,6 +451,7 @@ query PullRequest($owner: String!, $name: String!, $number: Int!) {
 					url
 				}
 			}
+			...PullRequestFragment
 		}
 	}
 	rateLimit {
@@ -518,6 +608,16 @@ query PullRequestState($owner: String!, $name: String!, $number: Int!) {
 			title
 			number
 			state
+		}
+	}
+}
+
+query PullRequestForHead($owner: String!, $name: String!, $headRefName: String!) {
+	repository(owner: $owner, name: $name) {
+		pullRequests(first: 1, headRefName: $headRefName, orderBy: {field: CREATED_AT, direction: DESC}) {
+			nodes {
+				...PullRequestFragment
+			}
 		}
 	}
 }
@@ -683,6 +783,20 @@ query GetAssignableUsers($owner: String!, $name: String!, $first: Int!, $after: 
 		cost
 		remaining
 		resetAt
+	}
+}
+
+query ListBranches($owner: String!, $name: String!, $first: Int!, $after: String) {
+	repository(owner: $owner, name: $name) {
+		refs(first: $first, after: $after, refPrefix: "refs/heads/") {
+			nodes {
+				name
+			}
+			pageInfo {
+				hasNextPage
+				endCursor
+			}
+		}
 	}
 }
 
@@ -965,6 +1079,22 @@ mutation UnresolveReviewThread($input: UnresolveReviewThreadInput!) {
 	unresolveReviewThread(input: $input) {
 		thread {
 			...ReviewThread
+		}
+	}
+}
+
+mutation EnablePullRequestAutoMerge($input: EnablePullRequestAutoMergeInput!) {
+	enablePullRequestAutoMerge(input: $input) {
+		pullRequest {
+			id
+		}
+	}
+}
+
+mutation DisablePullRequestAutoMerge($input: DisablePullRequestAutoMergeInput!) {
+	disablePullRequestAutoMerge(input: $input) {
+		pullRequest {
+			id
 		}
 	}
 }

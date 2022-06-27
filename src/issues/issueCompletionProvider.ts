@@ -9,15 +9,14 @@ import { IMilestone } from '../github/interface';
 import { IssueModel } from '../github/issueModel';
 import { MilestoneModel } from '../github/milestoneModel';
 import { RepositoriesManager } from '../github/repositoriesManager';
+import { getIssueNumberLabel, variableSubstitution } from '../github/utils';
 import { extractIssueOriginFromQuery, NEW_ISSUE_SCHEME } from './issueFile';
 import { StateManager } from './stateManager';
 import {
-	getIssueNumberLabel,
 	getRootUriFromScmInputUri,
 	isComment,
 	issueMarkdown,
 	ISSUES_CONFIGURATION,
-	variableSubstitution,
 } from './util';
 
 class IssueCompletionItem extends vscode.CompletionItem {
@@ -82,8 +81,6 @@ export class IssueCompletionProvider implements vscode.CompletionItemProvider {
 				range = new vscode.Range(position.translate(0, -1), position);
 			}
 		}
-
-		await this.stateManager.tryInitializeAndWait();
 
 		const completionItems: Map<string, vscode.CompletionItem> = new Map();
 		const now = new Date();

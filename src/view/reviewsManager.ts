@@ -7,6 +7,7 @@ import * as vscode from 'vscode';
 import { Repository } from '../api/api';
 import { GitApiImpl } from '../api/api1';
 import { ITelemetry } from '../common/telemetry';
+import { Schemes } from '../common/uri';
 import { CredentialStore } from '../github/credentials';
 import { RepositoriesManager } from '../github/repositoriesManager';
 import { GitContentFileSystemProvider } from './gitContentProvider';
@@ -26,12 +27,12 @@ export class ReviewsManager {
 		private _prFileChangesProvider: PullRequestChangesTreeDataProvider,
 		private _telemetry: ITelemetry,
 		credentialStore: CredentialStore,
-		gitApi: GitApiImpl,
+		private _gitApi: GitApiImpl,
 	) {
 		this._disposables = [];
-		const gitContentProvider = new GitContentFileSystemProvider(gitApi, credentialStore);
+		const gitContentProvider = new GitContentFileSystemProvider(_gitApi, credentialStore);
 		gitContentProvider.registerTextDocumentContentFallback(this.provideTextDocumentContent.bind(this));
-		this._disposables.push(vscode.workspace.registerFileSystemProvider('review', gitContentProvider, { isReadonly: true }));
+		this._disposables.push(vscode.workspace.registerFileSystemProvider(Schemes.Review, gitContentProvider, { isReadonly: true }));
 		this.registerListeners();
 		this._disposables.push(this._prsTreeDataProvider);
 	}
@@ -42,7 +43,7 @@ export class ReviewsManager {
 				if (e.affectsConfiguration('githubPullRequests.showInSCM')) {
 					if (this._prFileChangesProvider) {
 						this._prFileChangesProvider.dispose();
-						this._prFileChangesProvider = new PullRequestChangesTreeDataProvider(this._context);
+						this._prFileChangesProvider = new PullRequestChangesTreeDataProvider(this._context, this._gitApi, this._reposManager);
 
 						for (const reviewManager of this._reviewManagers) {
 							reviewManager.updateState(true);

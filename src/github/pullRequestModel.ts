@@ -7,9 +7,9 @@ import * as buffer from 'buffer';
 import * as path from 'path';
 import equals from 'fast-deep-equal';
 import * as vscode from 'vscode';
-import { Repository } from '../api/api';
 import { DiffSide, IComment, IReviewThread, ViewedState } from '../common/comment';
 import { parseDiff } from '../common/diffHunk';
+import { commands, contexts } from '../common/executeCommands';
 import { GitChangeType, InMemFileChange, SlimFileChange } from '../common/file';
 import { GitHubRef } from '../common/githubRef';
 import Logger from '../common/logger';
@@ -48,6 +48,7 @@ import {
 	IAccount,
 	IRawFileChange,
 	ISuggestedReviewer,
+	MergeMethod,
 	PullRequest,
 	PullRequestChecks,
 	PullRequestMergeability,
@@ -107,6 +108,8 @@ export class PullRequestModel extends IssueModel<PullRequest> implements IPullRe
 	public onDidChangeReviewThreads = this._onDidChangeReviewThreads.event;
 
 	private _fileChangeViewedState: FileViewedState = {};
+	private _viewedFiles: Set<string> = new Set();
+	private _unviewedFiles: Set<string> = new Set();
 	private _onDidChangeFileViewedState = new vscode.EventEmitter<FileViewedStateChangeEvent>();
 	public onDidChangeFileViewedState = this._onDidChangeFileViewedState.event;
 
@@ -202,14 +205,14 @@ export class PullRequestModel extends IssueModel<PullRequest> implements IPullRe
 			this.isRemoteHeadDeleted = item.isRemoteHeadDeleted;
 		}
 		if (item.head) {
-			this.head = new GitHubRef(item.head.ref, item.head.label, item.head.sha, item.head.repo.cloneUrl);
+			this.head = new GitHubRef(item.head.ref, item.head.label, item.head.sha, item.head.repo.cloneUrl, item.head.repo.owner, item.head.repo.name);
 		}
 
 		if (item.isRemoteBaseDeleted != null) {
 			this.isRemoteBaseDeleted = item.isRemoteBaseDeleted;
 		}
 		if (item.base) {
-			this.base = new GitHubRef(item.base.ref, item.base!.label, item.base!.sha, item.base!.repo.cloneUrl);
+			this.base = new GitHubRef(item.base.ref, item.base!.label, item.base!.sha, item.base!.repo.cloneUrl, item.base.repo.owner, item.base.repo.name);
 		}
 	}
 
@@ -328,8 +331,13 @@ export class PullRequestModel extends IssueModel<PullRequest> implements IPullRe
 	 * @param body The summary comment text.
 	 */
 	async submitReview(event?: ReviewEvent, body?: string): Promise<CommonReviewEvent> {
-		const pendingReviewId = await this.getPendingReviewId();
+		let pendingReviewId = await this.getPendingReviewId();
 		const { mutate, schema } = await this.githubRepository.ensure();
+
+		if (!pendingReviewId && (event === ReviewEvent.Comment)) {
+			// Create a new review so that we can comment on it.
+			pendingReviewId = await this.startReview();
+		}
 
 		if (pendingReviewId) {
 			const { data } = await mutate<SubmitReviewResponse>({
@@ -464,7 +472,8 @@ export class PullRequestModel extends IssueModel<PullRequest> implements IPullRe
 	 * a new review.
 	 * @param body The body of the thread's first comment.
 	 * @param commentPath The path to the file being commented on.
-	 * @param line The line on which to add the comment.
+	 * @param startLine The start line on which to add the comment.
+	 * @param endLine The end line on which to add the comment.
 	 * @param side The side the comment should be deleted on, i.e. the original or modified file.
 	 * @param suppressDraftModeUpdate If a draft mode change should event should be suppressed. In the
 	 * case of a single comment add, the review is created and then immediately submitted, so this prevents
@@ -474,7 +483,8 @@ export class PullRequestModel extends IssueModel<PullRequest> implements IPullRe
 	async createReviewThread(
 		body: string,
 		commentPath: string,
-		line: number,
+		startLine: number,
+		endLine: number,
 		side: DiffSide,
 		suppressDraftModeUpdate?: boolean,
 	): Promise<IReviewThread | undefined> {
@@ -492,7 +502,8 @@ export class PullRequestModel extends IssueModel<PullRequest> implements IPullRe
 					body,
 					pullRequestId: this.graphNodeId,
 					pullRequestReviewId: pendingReviewId,
-					line,
+					startLine: startLine === endLine ? undefined : startLine,
+					line: endLine,
 					side,
 				},
 			},
@@ -1030,7 +1041,7 @@ export class PullRequestModel extends IssueModel<PullRequest> implements IPullRe
 			vscode.commands.executeCommand('vscode.open', vscode.Uri.parse(comment.url));
 			return;
 		}
-		const contentChanges = await pullRequestModel.getFileChangesInfo(folderManager.repository);
+		const contentChanges = await pullRequestModel.getFileChangesInfo();
 		const change = contentChanges.find(
 			fileChange => fileChange.fileName === comment.path || fileChange.previousFileName === comment.path,
 		);
@@ -1103,11 +1114,11 @@ export class PullRequestModel extends IssueModel<PullRequest> implements IPullRe
 		return this._fileChanges;
 	}
 
-	async getFileChangesInfo(repo: Repository) {
+	async getFileChangesInfo() {
 		this._fileChanges.clear();
 		const data = await this.getRawFileChangesInfo();
 		const mergebase = this.mergeBase || this.base.sha;
-		const parsed = await parseDiff(data, repo, mergebase);
+		const parsed = await parseDiff(data, mergebase);
 		parsed.forEach(fileChange => {
 			this._fileChanges.set(fileChange.fileName, fileChange);
 		});
@@ -1156,11 +1167,11 @@ export class PullRequestModel extends IssueModel<PullRequest> implements IPullRe
 
 		this.mergeBase = data.merge_base_commit.sha;
 
-		const MAX_FILE_CHANGES_IN_COMPARE_COMMITS = 300;
+		const MAX_FILE_CHANGES_IN_COMPARE_COMMITS = 100;
 		let files: IRawFileChange[] = [];
 
 		if (data.files.length >= MAX_FILE_CHANGES_IN_COMPARE_COMMITS) {
-			// compareCommits will return a maximum of 300 changed files
+			// compareCommits will return a maximum of 100 changed files
 			// If we have (maybe) more than that, we'll need to fetch them with listFiles API call
 			Logger.debug(
 				`More than ${MAX_FILE_CHANGES_IN_COMPARE_COMMITS} files changed, fetching all file changes of PR #${this.number}`,
@@ -1184,6 +1195,18 @@ export class PullRequestModel extends IssueModel<PullRequest> implements IPullRe
 		return files;
 	}
 
+	get autoMerge(): boolean {
+		return !!this.item.autoMerge;
+	}
+
+	get autoMergeMethod(): MergeMethod | undefined {
+		return this.item.autoMergeMethod;
+	}
+
+	get allowAutoMerge(): boolean {
+		return !!this.item.allowAutoMerge;
+	}
+
 	/**
 	 * Get the current mergeability of the pull request.
 	 */
@@ -1201,7 +1224,7 @@ export class PullRequestModel extends IssueModel<PullRequest> implements IPullRe
 				},
 			});
 			Logger.debug(`Fetch pull request mergeability ${this.number} - done`, PullRequestModel.ID);
-			return parseMergeability(data.repository.pullRequest.mergeable);
+			return parseMergeability(data.repository.pullRequest.mergeable, data.repository.pullRequest.mergeStateStatus);
 		} catch (e) {
 			Logger.appendLine(`PullRequestModel> Unable to fetch PR Mergeability: ${e}`);
 			return PullRequestMergeability.Unknown;
@@ -1353,6 +1376,58 @@ export class PullRequestModel extends IssueModel<PullRequest> implements IPullRe
 		}
 	}
 
+	async enableAutoMerge(mergeMethod: MergeMethod): Promise<void> {
+		try {
+			const { mutate, schema } = await this.githubRepository.ensure();
+			const { data } = await mutate({
+				mutation: schema.EnablePullRequestAutoMerge,
+				variables: {
+					input: {
+						mergeMethod: mergeMethod.toUpperCase(),
+						pullRequestId: this.graphNodeId
+					}
+				}
+			});
+
+			if (!data) {
+				throw new Error('Enable auto-merge failed.');
+			}
+			this.item.autoMerge = true;
+			this.item.autoMergeMethod = mergeMethod;
+		} catch (e) {
+			if (e.message === 'GraphQL error: ["Pull request Pull request is in clean status"]') {
+				vscode.window.showWarningMessage('Unable to enable auto-merge. Pull request status checks are already green.');
+			} else {
+				throw e;
+			}
+		}
+	}
+
+	async disableAutoMerge(): Promise<void> {
+		try {
+			const { mutate, schema } = await this.githubRepository.ensure();
+			const { data } = await mutate({
+				mutation: schema.DisablePullRequestAutoMerge,
+				variables: {
+					input: {
+						pullRequestId: this.graphNodeId
+					}
+				}
+			});
+
+			if (!data) {
+				throw new Error('Disable auto-merge failed.');
+			}
+			this.item.autoMerge = false;
+		} catch (e) {
+			if (e.message === 'GraphQL error: ["Pull request Pull request is in clean status"]') {
+				vscode.window.showWarningMessage('Unable to enable auto-merge. Pull request status checks are already green.');
+			} else {
+				throw e;
+			}
+		}
+	}
+
 	async initializePullRequestFileViewState(): Promise<void> {
 		const { query, schema, remote } = await this.githubRepository.ensure();
 
@@ -1375,8 +1450,9 @@ export class PullRequestModel extends IssueModel<PullRequest> implements IPullRe
 				if (this._fileChangeViewedState[n.path] !== n.viewerViewedState) {
 					changed.push({ fileName: n.path, viewed: n.viewerViewedState });
 				}
-
-				this._fileChangeViewedState[n.path] = n.viewerViewedState;
+				// No event for setting the file viewed state here.
+				// Instead, wait until all the changes have been made and set the context at the end.
+				this.setFileViewedState(n.path, n.viewerViewedState, false);
 			});
 
 			hasNextPage = data.repository.pullRequest.files.pageInfo.hasNextPage;
@@ -1388,8 +1464,10 @@ export class PullRequestModel extends IssueModel<PullRequest> implements IPullRe
 		}
 	}
 
-	async markFileAsViewed(fileName: string): Promise<void> {
+	async markFileAsViewed(filePathOrSubpath: string): Promise<void> {
 		const { mutate, schema } = await this.githubRepository.ensure();
+		const fileName = filePathOrSubpath.startsWith(this.githubRepository.rootUri.path) ?
+			filePathOrSubpath.substring(this.githubRepository.rootUri.path.length + 1) : filePathOrSubpath;
 		await mutate<void>({
 			mutation: schema.MarkFileAsViewed,
 			variables: {
@@ -1400,12 +1478,13 @@ export class PullRequestModel extends IssueModel<PullRequest> implements IPullRe
 			},
 		});
 
-		this._fileChangeViewedState[fileName] = ViewedState.VIEWED;
-		this._onDidChangeFileViewedState.fire({ changed: [{ fileName, viewed: ViewedState.VIEWED }] });
+		this.setFileViewedState(fileName, ViewedState.VIEWED, true);
 	}
 
-	async unmarkFileAsViewed(fileName: string): Promise<void> {
+	async unmarkFileAsViewed(filePathOrSubpath: string): Promise<void> {
 		const { mutate, schema } = await this.githubRepository.ensure();
+		const fileName = filePathOrSubpath.startsWith(this.githubRepository.rootUri.path) ?
+			filePathOrSubpath.substring(this.githubRepository.rootUri.path.length + 1) : filePathOrSubpath;
 		await mutate<void>({
 			mutation: schema.UnmarkFileAsViewed,
 			variables: {
@@ -1416,7 +1495,39 @@ export class PullRequestModel extends IssueModel<PullRequest> implements IPullRe
 			},
 		});
 
-		this._fileChangeViewedState[fileName] = ViewedState.UNVIEWED;
-		this._onDidChangeFileViewedState.fire({ changed: [{ fileName, viewed: ViewedState.UNVIEWED }] });
+		this.setFileViewedState(fileName, ViewedState.UNVIEWED, true);
+	}
+
+	private setFileViewedState(fileSubpath: string, viewedState: ViewedState, event: boolean) {
+		const filePath = vscode.Uri.joinPath(this.githubRepository.rootUri, fileSubpath).fsPath;
+		switch (viewedState) {
+			case ViewedState.DISMISSED: {
+				this._viewedFiles.delete(filePath);
+				this._unviewedFiles.delete(filePath);
+				break;
+			}
+			case ViewedState.UNVIEWED: {
+				this._viewedFiles.delete(filePath);
+				this._unviewedFiles.add(filePath);
+				break;
+			}
+			case ViewedState.VIEWED: {
+				this._viewedFiles.add(filePath);
+				this._unviewedFiles.delete(filePath);
+			}
+		}
+		this._fileChangeViewedState[fileSubpath] = viewedState;
+		if (event) {
+			this._onDidChangeFileViewedState.fire({ changed: [{ fileName: fileSubpath, viewed: viewedState }] });
+		}
+	}
+
+	/**
+	 * Using these contexts is fragile in a multi-root workspace where multiple PRs are checked out.
+	 * If you have two active PRs that have the same file path relative to their rootdir, then these context can get confused.
+	 */
+	public setFileViewedContext() {
+		commands.setContext(contexts.VIEWED_FILES, Array.from(this._viewedFiles));
+		commands.setContext(contexts.UNVIEWED_FILES, Array.from(this._unviewedFiles));
 	}
 }

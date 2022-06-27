@@ -24,13 +24,14 @@ import { GHPRComment, TemporaryComment } from './github/prComment';
 import { PullRequestModel } from './github/pullRequestModel';
 import { PullRequestOverviewPanel } from './github/pullRequestOverview';
 import { RepositoriesManager } from './github/repositoriesManager';
-import { isInCodespaces } from './github/utils';
+import { getIssuesUrl, getPullsUrl, isInCodespaces } from './github/utils';
 import { PullRequestsTreeDataProvider } from './view/prsTreeDataProvider';
 import { ReviewManager } from './view/reviewManager';
 import { CategoryTreeNode } from './view/treeNodes/categoryNode';
 import { CommitNode } from './view/treeNodes/commitNode';
 import { DescriptionNode } from './view/treeNodes/descriptionNode';
 import {
+	FileChangeNode,
 	GitFileChangeNode,
 	InMemFileChangeNode,
 	openFileCommand,
@@ -244,15 +245,15 @@ export function registerCommands(
 		vscode.commands.registerCommand('pr.openFileOnGitHub', async (e: GitFileChangeNode | RemoteFileChangeNode) => {
 			if (e instanceof RemoteFileChangeNode) {
 				const choice = await vscode.window.showInformationMessage(
-					`${e.fileName} can't be opened locally. Do you want to open it on GitHub?`,
+					`${e.changeModel.fileName} can't be opened locally. Do you want to open it on GitHub?`,
 					'Open',
 				);
 				if (!choice) {
 					return;
 				}
 			}
-			if (e.blobUrl) {
-				return vscode.commands.executeCommand('vscode.open', vscode.Uri.parse(e.blobUrl));
+			if (e.changeModel.blobUrl) {
+				return vscode.commands.executeCommand('vscode.open', vscode.Uri.parse(e.changeModel.blobUrl));
 			}
 		}),
 	);
@@ -268,15 +269,15 @@ export function registerCommands(
 			// if this is an image, encode it as a base64 data URI
 			const folderManager = reposManager.getManagerForIssueModel(e.pullRequest);
 			if (folderManager) {
-				const imageDataURI = await asImageDataURI(e.parentFilePath, folderManager.repository);
-				vscode.commands.executeCommand('vscode.open', imageDataURI || e.parentFilePath);
+				const imageDataURI = await asImageDataURI(e.changeModel.parentFilePath, folderManager.repository);
+				vscode.commands.executeCommand('vscode.open', imageDataURI || e.changeModel.parentFilePath);
 			}
 		}),
 	);
 
 	context.subscriptions.push(
 		vscode.commands.registerCommand('pr.openModifiedFile', (e: GitFileChangeNode) => {
-			vscode.commands.executeCommand('vscode.open', e.filePath);
+			vscode.commands.executeCommand('vscode.open', e.changeModel.filePath);
 		}),
 	);
 
@@ -379,6 +380,12 @@ export function registerCommands(
 
 	context.subscriptions.push(
 		vscode.commands.registerCommand('pr.pick', async (pr: PRNode | DescriptionNode | PullRequestModel) => {
+			if (pr === undefined) {
+				// This is unexpected, but has happened a few times.
+				Logger.appendLine('Unexpectedly received undefined when picking a PR.');
+				return vscode.window.showErrorMessage('No pull request was selected to checkout, please try again.');
+			}
+
 			let pullRequestModel: PullRequestModel;
 
 			if (pr instanceof PRNode || pr instanceof DescriptionNode) {
@@ -411,13 +418,23 @@ export function registerCommands(
 	);
 
 	context.subscriptions.push(
-		vscode.commands.registerCommand('pr.exit', async (pr: PRNode | DescriptionNode | PullRequestModel) => {
-			let pullRequestModel: PullRequestModel;
+		vscode.commands.registerCommand('pr.exit', async (pr: PRNode | DescriptionNode | PullRequestModel | undefined) => {
+			let pullRequestModel: PullRequestModel | undefined;
 
 			if (pr instanceof PRNode || pr instanceof DescriptionNode) {
 				pullRequestModel = pr.pullRequestModel;
+			} else if (pr === undefined) {
+				pullRequestModel = await chooseItem<PullRequestModel>(reposManager.folderManagers
+					.map(folderManager => folderManager.activePullRequest!)
+					.filter(activePR => !!activePR),
+					itemValue => `${itemValue.number}: ${itemValue.title}`,
+					{ placeHolder: 'Choose the pull request to exit' });
 			} else {
 				pullRequestModel = pr;
+			}
+
+			if (!pullRequestModel) {
+				return;
 			}
 
 			const fromDescriptionPage = pr instanceof PullRequestModel;
@@ -434,7 +451,7 @@ export function registerCommands(
 					title: `Exiting Pull Request`,
 				},
 				async () => {
-					const branch = await pullRequestModel.githubRepository.getDefaultBranch();
+					const branch = await pullRequestModel!.githubRepository.getDefaultBranch();
 					const manager = reposManager.getManagerForIssueModel(pullRequestModel);
 					if (manager) {
 						manager.checkoutDefaultBranch(branch);
@@ -878,9 +895,19 @@ export function registerCommands(
 	);
 
 	context.subscriptions.push(
-		vscode.commands.registerCommand('pr.markFileAsViewed', async (treeNode: GitFileChangeNode) => {
+		vscode.commands.registerCommand('pr.markFileAsViewed', async (treeNode: FileChangeNode | vscode.Uri) => {
 			try {
-				await treeNode.pullRequest.markFileAsViewed(treeNode.fileName);
+				if (treeNode instanceof FileChangeNode) {
+					await treeNode.pullRequest.markFileAsViewed(treeNode.fileName);
+					const manager = reposManager.getManagerForFile(treeNode.changeModel.filePath);
+					if (treeNode.pullRequest === manager?.activePullRequest) {
+						treeNode.pullRequest.setFileViewedContext();
+					}
+				} else {
+					const manager = reposManager.getManagerForFile(treeNode);
+					await manager?.activePullRequest?.markFileAsViewed(treeNode.path);
+					manager?.activePullRequest?.setFileViewedContext();
+				}
 			} catch (e) {
 				vscode.window.showErrorMessage(`Marked file as viewed failed: ${e}`);
 			}
@@ -888,9 +915,19 @@ export function registerCommands(
 	);
 
 	context.subscriptions.push(
-		vscode.commands.registerCommand('pr.unmarkFileAsViewed', async (treeNode: GitFileChangeNode) => {
+		vscode.commands.registerCommand('pr.unmarkFileAsViewed', async (treeNode: FileChangeNode | vscode.Uri) => {
 			try {
-				await treeNode.pullRequest.unmarkFileAsViewed(treeNode.fileName);
+				if (treeNode instanceof FileChangeNode) {
+					await treeNode.pullRequest.unmarkFileAsViewed(treeNode.fileName);
+					const manager = reposManager.getManagerForFile(treeNode.changeModel.filePath);
+					if (treeNode.pullRequest === manager?.activePullRequest) {
+						treeNode.pullRequest.setFileViewedContext();
+					}
+				} else {
+					const manager = reposManager.getManagerForFile(treeNode);
+					await manager?.activePullRequest?.unmarkFileAsViewed(treeNode.path);
+					manager?.activePullRequest?.setFileViewedContext();
+				}
 			} catch (e) {
 				vscode.window.showErrorMessage(`Marked file as not viewed failed: ${e}`);
 			}
@@ -924,7 +961,7 @@ export function registerCommands(
 			}
 			const prNumberMatcher = /^#?(\d*)$/;
 			const prNumber = await vscode.window.showInputBox({
-				ignoreFocusOut: true, prompt: 'Enter the a pull request number',
+				ignoreFocusOut: true, prompt: 'Enter the pull request number',
 				validateInput: (input: string) => {
 					const matches = input.match(prNumberMatcher);
 					if (!matches || (matches.length !== 2) || Number.isNaN(Number(matches[1]))) {
@@ -941,4 +978,30 @@ export function registerCommands(
 				return ReviewManager.getReviewManagerForFolderManager(reviewManagers, githubRepo.manager)?.switch(prModel);
 			}
 		}));
+
+		function chooseRepoToOpen() {
+			const githubRepositories: GitHubRepository[] = [];
+				reposManager.folderManagers.forEach(manager => {
+					githubRepositories.push(...(manager.gitHubRepositories));
+				});
+				return chooseItem<GitHubRepository>(
+					githubRepositories,
+					itemValue => `${itemValue.remote.owner}/${itemValue.remote.repositoryName}`,
+					{ placeHolder: 'Which GitHub repository do you want to open?' }
+				);
+		}
+		context.subscriptions.push(
+			vscode.commands.registerCommand('pr.openPullsWebsite', async () => {
+				const githubRepo = await chooseRepoToOpen();
+				if (githubRepo) {
+					vscode.env.openExternal(getPullsUrl(githubRepo));
+				}
+			}));
+		context.subscriptions.push(
+			vscode.commands.registerCommand('issues.openIssuesWebsite', async () => {
+				const githubRepo = await chooseRepoToOpen();
+				if (githubRepo) {
+					vscode.env.openExternal(getIssuesUrl(githubRepo));
+				}
+			}));
 }

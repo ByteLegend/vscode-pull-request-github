@@ -4,7 +4,7 @@
  *--------------------------------------------------------------------------------------------*/
 
 import { createContext } from 'react';
-import { CreateParams, ScrollPosition } from '../../common/views';
+import { CreateParams, CreatePullRequest, ScrollPosition } from '../../common/views';
 import { getMessageHandler, MessageHandler, vscode } from './message';
 
 const defaultCreateParams: CreateParams = {
@@ -63,9 +63,9 @@ export class CreatePRContext {
 			args: branch
 		});
 
-		const pendingTitle = (!this.createParams.pendingTitle || (this.createParams.pendingTitle === this.createParams.defaultTitle))
+		const pendingTitle = ((this.createParams.pendingTitle === undefined) || (this.createParams.pendingTitle === this.createParams.defaultTitle))
 			? response.title : this.createParams.pendingTitle;
-		const pendingDescription = (!this.createParams.pendingDescription || (this.createParams.pendingDescription === this.createParams.defaultDescription))
+		const pendingDescription = ((this.createParams.pendingDescription === undefined) || (this.createParams.pendingDescription === this.createParams.defaultDescription))
 			? response.description : this.createParams.pendingDescription;
 
 		this.updateState({
@@ -108,21 +108,24 @@ export class CreatePRContext {
 
 	public submit = async (): Promise<void> => {
 		try {
+			const args: CreatePullRequest = {
+				title: this.createParams.pendingTitle!,
+				body: this.createParams.pendingDescription!,
+				owner: this.createParams.baseRemote!.owner,
+				repo: this.createParams.baseRemote!.repositoryName,
+				base: this.createParams.baseBranch!,
+				compareBranch: this.createParams.compareBranch!,
+				compareOwner: this.createParams.compareRemote!.owner,
+				compareRepo: this.createParams.compareRemote!.repositoryName,
+				draft: this.createParams.isDraft,
+				autoMerge: !!this.createParams.autoMerge,
+				autoMergeMethod: this.createParams.autoMergeMethod
+			};
+			vscode.setState(defaultCreateParams);
 			await this.postMessage({
 				command: 'pr.create',
-				args: {
-					title: this.createParams.pendingTitle,
-					body: this.createParams.pendingDescription,
-					owner: this.createParams.baseRemote.owner,
-					repo: this.createParams.baseRemote.repositoryName,
-					base: this.createParams.baseBranch,
-					compareBranch: this.createParams.compareBranch,
-					compareOwner: this.createParams.compareRemote.owner,
-					compareRepo: this.createParams.compareRemote.repositoryName,
-					draft: this.createParams.isDraft,
-				},
+				args,
 			});
-			vscode.setState(defaultCreateParams);
 		} catch (e) {
 			this.updateState({ createError: (typeof e === 'string') ? e : (e.message ? e.message : 'An unknown error occurred.') });
 		}
@@ -193,6 +196,7 @@ export class CreatePRContext {
 				message.params.baseBranch = message.params.defaultBaseBranch;
 				message.params.compareBranch = message.params.defaultCompareBranch;
 				message.params.compareRemote = message.params.defaultCompareRemote;
+				message.params.autoMerge = false;
 				this.updateState(message.params);
 				return;
 

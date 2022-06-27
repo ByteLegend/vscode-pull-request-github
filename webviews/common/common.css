@@ -122,7 +122,7 @@ body img.avatar {
 }
 
 .avatar-link {
-	flex-shrink: 0;;
+	flex-shrink: 0;
 }
 
 .section-item .avatar-link {
@@ -162,12 +162,32 @@ body img.avatar {
 	margin-right: 8px;
 }
 
+.automerge-section {
+	display: flex;
+}
+
+.automerge-section .merge-select-container{
+	padding-top: 4px;
+	padding-left: 4px;
+}
+
+.automerge-checkbox-wrapper,
+.automerge-checkbox-label {
+	display: flex;
+    align-items: center;
+}
+
 /** Theming */
 
-.vscode-high-contrast button,
+.vscode-high-contrast button {
+	outline: none;
+	background: var(--vscode-button-background);
+	border: 1px solid var(--vscode-contrastBorder);
+}
+
 .vscode-high-contrast input {
 	outline: none;
-	background: none !important;
+	background: var(--vscode-input-background);
 	border: 1px solid var(--vscode-contrastBorder);
 }
 

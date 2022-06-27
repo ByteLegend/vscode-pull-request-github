@@ -18,14 +18,15 @@ import { getEnterpriseUri, hasEnterpriseUri } from './utils';
 
 const TRY_AGAIN = 'Try again?';
 const CANCEL = 'Cancel';
-const SIGNIN_COMMAND = 'Sign in';
-const IGNORE_COMMAND = "Don't show again";
+const SIGNIN_COMMAND = 'Sign In';
+const IGNORE_COMMAND = "Don't Show Again";
 
 const PROMPT_FOR_SIGN_IN_SCOPE = 'prompt for sign in';
 const PROMPT_FOR_SIGN_IN_STORAGE_KEY = 'login';
 
 // If the scopes are changed, make sure to notify all interested parties to make sure this won't cause problems.
-const SCOPES = ['read:user', 'user:email', 'repo'];
+const SCOPES_OLD = ['read:user', 'user:email', 'repo'];
+const SCOPES = ['read:user', 'user:email', 'repo', 'workflow'];
 
 export enum AuthProvider {
 	github = 'github',
@@ -87,9 +88,14 @@ export class CredentialStore implements vscode.Disposable {
 			}
 		}
 		getAuthSessionOptions = { ...getAuthSessionOptions, ...{ createIfNone: false } };
+
+		if (authProviderId === AuthProvider['github-enterprise']) {
+			getAuthSessionOptions = { ...getAuthSessionOptions, ...{ createIfNone: true, silent: false } };
+		}
+
 		let session;
 		try {
-			session = await vscode.authentication.getSession(authProviderId, SCOPES, getAuthSessionOptions);
+			session = await this.getSession(authProviderId, getAuthSessionOptions);
 		} catch (e) {
 			if (getAuthSessionOptions.forceNewSession && (e.message === 'User did not consent to login.')) {
 				// There are cases where a forced login may not be 100% needed, so just continue as usual if
@@ -105,13 +111,24 @@ export class CredentialStore implements vscode.Disposable {
 			} else {
 				this._enterpriseSessionId = session.id;
 			}
-			const github = await this.createHub(session.accessToken, authProviderId);
+			let github: GitHub | undefined;
+			try {
+				github = await this.createHub(session.accessToken, authProviderId);
+			} catch (e) {
+				if ((e.message === 'Bad credentials') && !getAuthSessionOptions.forceNewSession) {
+					getAuthSessionOptions.forceNewSession = true;
+					getAuthSessionOptions.silent = false;
+					return this.initialize(authProviderId, getAuthSessionOptions);
+				}
+			}
 			if (authProviderId === AuthProvider.github) {
 				this._githubAPI = github;
 			} else {
 				this._githubEnterpriseAPI = github;
 			}
-			await this.setCurrentUser(github);
+			if (github) {
+				await this.setCurrentUser(github);
+			}
 			this._onDidInitialize.fire();
 		} else {
 			Logger.debug(`No GitHub${getGitHubSuffix(authProviderId)} token found.`, 'Authentication');
@@ -254,12 +271,45 @@ export class CredentialStore implements vscode.Disposable {
 	}
 
 	private async setCurrentUser(github: GitHub): Promise<void> {
-		const user = await github.octokit.users.getAuthenticated({});
-		github.currentUser = user.data;
+		try {
+			const user = await github.octokit.users.getAuthenticated({});
+			github.currentUser = user.data;
+		} catch (e) {
+			if (e.contains('ETIMEDOUT')) {
+				Logger.appendLine(`Error setting the user ${e}.`, 'Authentication');
+				await this.recreate('GitHub Pull Requests and Issues has encountered a problem with your login. Check the "GitHub Pull Request" output for more details.');
+				return this.setCurrentUser(github);
+			} else {
+				throw e;
+			}
+		}
+	}
+
+	private async getSession(authProviderId: AuthProvider, getAuthSessionOptions: vscode.AuthenticationGetSessionOptions) {
+		let session: vscode.AuthenticationSession | undefined = await vscode.authentication.getSession(authProviderId, SCOPES, { silent: true });
+		if (session) {
+			return session;
+		}
+
+		if (getAuthSessionOptions.createIfNone) {
+			const silent = getAuthSessionOptions.silent;
+			getAuthSessionOptions.createIfNone = false;
+			getAuthSessionOptions.silent = true;
+			session = await vscode.authentication.getSession(authProviderId, SCOPES_OLD, getAuthSessionOptions);
+			if (!session) {
+				getAuthSessionOptions.createIfNone = true;
+				getAuthSessionOptions.silent = silent;
+				session = await vscode.authentication.getSession(authProviderId, SCOPES, getAuthSessionOptions);
+			}
+		} else {
+			session = await vscode.authentication.getSession(authProviderId, SCOPES_OLD, getAuthSessionOptions);
+		}
+
+		return session;
 	}
 
 	private async getSessionOrLogin(authProviderId: AuthProvider): Promise<string> {
-		const session = await vscode.authentication.getSession(authProviderId, SCOPES, { createIfNone: true });
+		const session = (await this.getSession(authProviderId, { createIfNone: true }))!;
 		if (authProviderId === AuthProvider.github) {
 			this._sessionId = session.id;
 		} else {
@@ -344,7 +394,7 @@ const link = (url: string, token: string) =>
 			...headers,
 			authorization: token ? `Bearer ${token}` : '',
 			'X-ByteLegend-From':  'vscode-pull-request-github',
-			Accept: 'application/vnd.github.shadow-cat-preview+json, application/vnd.github.antiope-preview+json',
+			Accept: 'application/vnd.github.merge-info-preview'
 		},
 	})).concat(
 		createHttpLink({

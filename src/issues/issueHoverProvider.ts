@@ -7,12 +7,12 @@ import * as vscode from 'vscode';
 import { ITelemetry } from '../common/telemetry';
 import { FolderRepositoryManager } from '../github/folderRepositoryManager';
 import { RepositoriesManager } from '../github/repositoriesManager';
+import { ParsedIssue } from '../github/utils';
 import { StateManager } from './stateManager';
 import {
 	getIssue,
 	ISSUE_OR_URL_EXPRESSION,
 	issueMarkdown,
-	ParsedIssue,
 	parseIssueExpressionOutput,
 	shouldShowHover,
 } from './util';
@@ -52,7 +52,8 @@ export class IssueHoverProvider implements vscode.HoverProvider {
 			if (
 				tryParsed &&
 				match &&
-				tryParsed.issueNumber <= this.stateManager.maxIssueNumber(folderManager.repository.rootUri)
+				// Only check the max issue number if the owner/repo format isn't used here.
+				(tryParsed.owner || tryParsed.issueNumber <= this.stateManager.maxIssueNumber(folderManager.repository.rootUri))
 			) {
 				return this.createHover(folderManager, match[0], tryParsed, wordPosition);
 			}

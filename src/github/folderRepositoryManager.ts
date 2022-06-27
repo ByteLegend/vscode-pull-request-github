@@ -15,7 +15,7 @@ import { parseRepositoryRemotes, Remote } from '../common/remote';
 import { ISessionState } from '../common/sessionState';
 import { ITelemetry } from '../common/telemetry';
 import { EventType, TimelineEvent } from '../common/timelineEvent';
-import { fromPRUri } from '../common/uri';
+import { fromPRUri, Schemes } from '../common/uri';
 import { compareIgnoreCase, formatError, Predicate } from '../common/utils';
 import { EXTENSION_ID } from '../constants';
 import { REPO_KEYS, ReposState } from '../extensionState';
@@ -33,9 +33,11 @@ import {
 	convertRESTIssueToRawPullRequest,
 	convertRESTPullRequestToRawPullRequest,
 	convertRESTUserToAccount,
+	getOverrideBranch,
 	getRelatedUsersFromTimelineEvents,
 	loginComparator,
 	parseGraphQLUser,
+	variableSubstitution,
 } from './utils';
 
 interface PageInformation {
@@ -263,7 +265,7 @@ export class FolderRepositoryManager implements vscode.Disposable {
 						const activeTextEditors = vscode.window.visibleTextEditors;
 						if (activeTextEditors.length) {
 							const visiblePREditor = activeTextEditors.find(
-								editor => editor.document.uri.scheme === 'pr',
+								editor => editor.document.uri.scheme === Schemes.Pr,
 							);
 
 							if (visiblePREditor) {
@@ -926,12 +928,15 @@ export class FolderRepositoryManager implements vscode.Disposable {
 			const fetchPage = async (
 				pageNumber: number,
 			): Promise<{ items: any[]; hasMorePages: boolean } | undefined> => {
+				// Resolve variables in the query with each repo
+				const resolvedQuery = query ? await variableSubstitution(query, undefined,
+					{ base: await githubRepository.getDefaultBranch(), owner: githubRepository.remote.owner, repo: githubRepository.remote.repositoryName }) : undefined;
 				switch (pagedDataType) {
 					case PagedDataType.PullRequest: {
 						if (type === PRType.All) {
 							return githubRepository.getAllPullRequests(pageNumber);
 						} else {
-							return githubRepository.getPullRequestsForCategory(query || '', pageNumber);
+							return githubRepository.getPullRequestsForCategory(resolvedQuery || '', pageNumber);
 						}
 					}
 					case PagedDataType.Milestones: {
@@ -941,7 +946,7 @@ export class FolderRepositoryManager implements vscode.Disposable {
 						return githubRepository.getIssuesWithoutMilestone(pageInformation.pullRequestPage);
 					}
 					case PagedDataType.IssueSearch: {
-						return githubRepository.getIssues(pageInformation.pullRequestPage, query);
+						return githubRepository.getIssues(pageInformation.pullRequestPage, resolvedQuery);
 					}
 				}
 			};
@@ -973,8 +978,8 @@ export class FolderRepositoryManager implements vscode.Disposable {
 			//    OR we're fetching all (cases 1&3), and we've fetched as far as we had previously (or further, in case 1).
 			if (
 				itemData.items.length &&
-				(options.fetchNextPage === true ||
-					(options.fetchNextPage === false && pagesFetched >= getTotalFetchedPages()))
+				(options.fetchNextPage ||
+					((options.fetchNextPage === false) && !options.fetchOnePagePerRepo && (pagesFetched >= getTotalFetchedPages())))
 			) {
 				if (getTotalFetchedPages() === 0) {
 					// We're in case 1, manually set number of pages we looked through until we found first results.
@@ -990,7 +995,7 @@ export class FolderRepositoryManager implements vscode.Disposable {
 		}
 
 		return {
-			items: [],
+			items: itemData.items,
 			hasMorePages: false,
 			hasUnsearchedRepositories: false,
 		};
@@ -1037,8 +1042,11 @@ export class FolderRepositoryManager implements vscode.Disposable {
 		return milestones;
 	}
 
+	/**
+	 * Pull request defaults in the query, like owner and repository variables, will be resolved.
+	 */
 	async getIssues(
-		options: IPullRequestsPagingOptions = { fetchNextPage: false },
+		options: IPullRequestsPagingOptions = { fetchNextPage: false, fetchOnePagePerRepo: true },
 		query?: string,
 	): Promise<ItemsResponseResult<IssueModel>> {
 		return this.fetchPagedData<IssueModel>(options, 'issuesKey', PagedDataType.IssueSearch, PRType.All, query);
@@ -1107,7 +1115,7 @@ export class FolderRepositoryManager implements vscode.Disposable {
 		return {
 			owner: parent.owner!.login,
 			repo: parent.name,
-			base: parent.default_branch,
+			base: getOverrideBranch() ?? parent.default_branch,
 		};
 	}
 
@@ -1215,9 +1223,9 @@ export class FolderRepositoryManager implements vscode.Disposable {
 					const shouldPush = await vscode.window.showInformationMessage(
 						`There are no commits between '${params.base}' and '${params.head}'.\n\nDo you want to push your local commits and create the pull request?`,
 						{ modal: true },
-						'Push commits',
+						'Push Commits',
 					);
-					if (shouldPush === 'Push commits') {
+					if (shouldPush === 'Push Commits') {
 						await this._repository.push();
 						return this.createPullRequest(params);
 					} else {
@@ -1230,9 +1238,9 @@ export class FolderRepositoryManager implements vscode.Disposable {
 					const shouldCommit = await vscode.window.showInformationMessage(
 						`There are no commits between '${params.base}' and '${params.head}'.\n\nDo you want to commit your changes and create the pull request?`,
 						{ modal: true },
-						'Commit changes',
+						'Commit Changes',
 					);
-					if (shouldCommit === 'Commit changes') {
+					if (shouldCommit === 'Commit Changes') {
 						await vscode.commands.executeCommand('git.commit');
 						await this._repository.push();
 						return this.createPullRequest(params);
@@ -1246,9 +1254,9 @@ export class FolderRepositoryManager implements vscode.Disposable {
 				const shouldPushUpstream = await vscode.window.showInformationMessage(
 					`There is no upstream branch for '${params.base}'.\n\nDo you want to publish it and create the pull request?`,
 					{ modal: true },
-					'Publish branch',
+					'Publish Branch',
 				);
-				if (shouldPushUpstream === 'Publish branch') {
+				if (shouldPushUpstream === 'Publish Branch') {
 					await this._repository.push(repo.remote.remoteName, params.base, true);
 					return this.createPullRequest(params);
 				} else {
@@ -1344,8 +1352,11 @@ export class FolderRepositoryManager implements vscode.Disposable {
 		}
 	}
 
-	getCurrentUser(issueModel: IssueModel): IAccount {
-		return convertRESTUserToAccount(this._credentialStore.getCurrentUser(issueModel.githubRepository.remote.authProviderId), issueModel.githubRepository);
+	getCurrentUser(githubRepository?: GitHubRepository): IAccount {
+		if (!githubRepository) {
+			githubRepository = this.gitHubRepositories[0];
+		}
+		return convertRESTUserToAccount(this._credentialStore.getCurrentUser(githubRepository.remote.authProviderId), githubRepository);
 	}
 
 	async mergePullRequest(
@@ -1608,8 +1619,12 @@ export class FolderRepositoryManager implements vscode.Disposable {
 
 			// Check local branches
 			const results = await this.getBranchDeletionItems();
+			const defaults = await this.getPullRequestDefaults();
 			quickPick.items = results;
-			quickPick.selectedItems = results.filter(result => result.picked);
+			quickPick.selectedItems = results.filter(result => {
+				// Do not pick the default branch for the repo.
+				return result.picked && !((result.label === defaults.base) && (result.metadata.owner === defaults.owner) && (result.metadata.repositoryName === defaults.repo));
+			});
 			quickPick.busy = false;
 
 			let firstStep = true;
@@ -1789,37 +1804,27 @@ export class FolderRepositoryManager implements vscode.Disposable {
 		return matchingPullRequestMetadata;
 	}
 
-	async getMatchingPullRequestMetadataFromGitHub(): Promise<
+	async getMatchingPullRequestMetadataFromGitHub(remoteName?: string, upstreamBranchName?: string): Promise<
 		(PullRequestMetadata & { model: PullRequestModel }) | null
 	> {
-		if (
-			!this.repository ||
-			!this.repository.state.HEAD ||
-			!this.repository.state.HEAD.name ||
-			!this.repository.state.HEAD.upstream
-		) {
+		if (!remoteName || !upstreamBranchName) {
 			return null;
 		}
 
 		const headGitHubRepo = this.gitHubRepositories.find(
-			repo => repo.remote.remoteName === this.repository.state.HEAD?.upstream?.remote,
+			repo => repo.remote.remoteName === remoteName,
 		);
 
-		// Find the github repo that matches the upstream
+		// Search through each github repo to see if it has a PR with this head branch.
 		for (const repo of this.gitHubRepositories) {
-			if (repo.remote.remoteName === this.repository.state.HEAD.upstream.remote) {
-				const matchingPullRequest = await repo.getPullRequestForBranch(
-					`${headGitHubRepo?.remote.owner}:${this.repository.state.HEAD.upstream.name}`,
-				);
-				if (matchingPullRequest && matchingPullRequest.length > 0) {
-					return {
-						owner: repo.remote.owner,
-						repositoryName: repo.remote.repositoryName,
-						prNumber: matchingPullRequest[0].number,
-						model: matchingPullRequest[0],
-					};
-				}
-				break;
+			const matchingPullRequest = await repo.getPullRequestForBranch(upstreamBranchName);
+			if (matchingPullRequest && (matchingPullRequest.head?.owner === headGitHubRepo?.remote.owner)) {
+				return {
+					owner: repo.remote.owner,
+					repositoryName: repo.remote.repositoryName,
+					prNumber: matchingPullRequest.number,
+					model: matchingPullRequest,
+				};
 			}
 		}
 		return null;
@@ -1856,8 +1861,8 @@ export class FolderRepositoryManager implements vscode.Disposable {
 
 			const currentBranch = this.repository.state.HEAD?.name;
 			if (currentBranch === branchObj.name) {
-				const chooseABranch = 'Choose a branch';
-				vscode.window.showInformationMessage('The default branch is already checked out.', 'Choose a branch').then(choice => {
+				const chooseABranch = 'Choose a Branch';
+				vscode.window.showInformationMessage('The default branch is already checked out.', chooseABranch).then(choice => {
 					if (choice === chooseABranch) {
 						return vscode.commands.executeCommand('git.checkout');
 					}
@@ -1895,7 +1900,7 @@ export class FolderRepositoryManager implements vscode.Disposable {
 	}
 
 	private createAndAddGitHubRepository(remote: Remote, credentialStore: CredentialStore) {
-		const repo = new GitHubRepository(remote, credentialStore, this.telemetry, this._sessionState);
+		const repo = new GitHubRepository(remote, this.repository.rootUri, credentialStore, this.telemetry, this._sessionState);
 		this._githubRepositories.push(repo);
 		return repo;
 	}
@@ -1906,7 +1911,7 @@ export class FolderRepositoryManager implements vscode.Disposable {
 	}
 
 	createGitHubRepositoryFromOwnerName(owner: string, repositoryName: string): GitHubRepository {
-		const existing = this.findExistingGitHubRepository({owner, repositoryName});
+		const existing = this.findExistingGitHubRepository({ owner, repositoryName });
 		if (existing) {
 			return existing;
 		}

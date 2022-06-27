@@ -19,14 +19,13 @@ import { IAccount } from '../github/interface';
 import { IssueModel } from '../github/issueModel';
 import { MilestoneModel } from '../github/milestoneModel';
 import { RepositoriesManager } from '../github/repositoriesManager';
+import { getIssueNumberLabel, variableSubstitution } from '../github/utils';
 import { CurrentIssue } from './currentIssue';
 import {
 	BRANCH_CONFIGURATION,
 	DEFAULT_QUERY_CONFIGURATION,
-	getIssueNumberLabel,
 	ISSUES_CONFIGURATION,
 	QUERIES_CONFIGURATION,
-	variableSubstitution,
 } from './util';
 
 // TODO: make exclude from date words configurable
@@ -244,7 +243,7 @@ export class StateManager {
 			this._singleRepoStates.set(folderManager.repository.rootUri.path, singleRepoState);
 			const branch = folderManager.repository.state.HEAD?.name;
 			if (!singleRepoState.currentIssue && branch) {
-				await this.setCurrentIssueFromBranch(singleRepoState, branch);
+				await this.setCurrentIssueFromBranch(singleRepoState, branch, true);
 			}
 		}
 	}
@@ -319,7 +318,8 @@ export class StateManager {
 				}
 				items = this.setIssues(
 					folderManager,
-					await variableSubstitution(query.query, undefined, defaults, user),
+					// Do not resolve pull request defaults as they will get resolved in the query later per repository
+					await variableSubstitution(query.query, undefined, undefined, user),
 				);
 			}
 			singleRepoState.issueCollection.set(query.label, items);
@@ -331,7 +331,7 @@ export class StateManager {
 
 	private setIssues(folderManager: FolderRepositoryManager, query: string): Promise<IssueItem[]> {
 		return new Promise(async resolve => {
-			const issues = await folderManager.getIssues({ fetchNextPage: false }, query);
+			const issues = await folderManager.getIssues({ fetchNextPage: false, fetchOnePagePerRepo: true }, query);
 			this._onDidChangeIssueData.fire();
 			resolve(
 				issues.items.map(item => {
@@ -343,7 +343,7 @@ export class StateManager {
 		});
 	}
 
-	private async setCurrentIssueFromBranch(singleRepoState: SingleRepoState, branchName: string) {
+	private async setCurrentIssueFromBranch(singleRepoState: SingleRepoState, branchName: string, silent: boolean = false) {
 		const createBranchConfig = vscode.workspace
 			.getConfiguration(ISSUES_CONFIGURATION)
 			.get<string>(BRANCH_CONFIGURATION);
@@ -379,6 +379,7 @@ export class StateManager {
 					await this.setCurrentIssue(
 						singleRepoState,
 						new CurrentIssue(issueModel, singleRepoState.folderManager, this),
+						silent
 					);
 				}
 				return;
@@ -460,7 +461,7 @@ export class StateManager {
 	}
 
 	private isSettingIssue: boolean = false;
-	async setCurrentIssue(repoState: SingleRepoState | FolderRepositoryManager, issue: CurrentIssue | undefined) {
+	async setCurrentIssue(repoState: SingleRepoState | FolderRepositoryManager, issue: CurrentIssue | undefined, silent: boolean = false) {
 		if (this.isSettingIssue && issue === undefined) {
 			return;
 		}
@@ -483,7 +484,7 @@ export class StateManager {
 				this.context.subscriptions.push(issue.onDidChangeCurrentIssueState(() => this.updateStatusBar()));
 			}
 			this.context.workspaceState.update(CURRENT_ISSUE_KEY, issue?.issue.number);
-			if (!issue || (await issue.startWorking())) {
+			if (!issue || (await issue.startWorking(silent))) {
 				repoState.currentIssue = issue;
 				this.updateStatusBar();
 			}

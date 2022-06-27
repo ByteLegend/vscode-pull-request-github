@@ -61,6 +61,8 @@ export interface MergePullRequest {
 
 export interface IRepository {
 	cloneUrl: string;
+	owner: string;
+	name: string;
 }
 
 export interface IGitHubRef {
@@ -108,6 +110,9 @@ export interface PullRequest extends Issue {
 	base?: IGitHubRef;
 	merged?: boolean;
 	mergeable?: PullRequestMergeability;
+	autoMerge?: boolean;
+	autoMergeMethod?: MergeMethod;
+	allowAutoMerge?: boolean;
 	suggestedReviewers?: ISuggestedReviewer[];
 }
 
@@ -125,6 +130,7 @@ export interface IRawFileChange {
 
 export interface IPullRequestsPagingOptions {
 	fetchNextPage: boolean;
+	fetchOnePagePerRepo?: boolean;
 }
 
 export interface IPullRequestEditData {
@@ -141,6 +147,7 @@ export type MergeMethodsAvailability = {
 export type RepoAccessAndMergeMethods = {
 	hasWritePermission: boolean;
 	mergeMethodsAvailability: MergeMethodsAvailability;
+	viewerCanAutoMerge: boolean;
 };
 
 export interface User extends IAccount {

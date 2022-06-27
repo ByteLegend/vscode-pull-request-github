@@ -67,6 +67,7 @@ export class PRContext {
 	public addMilestone = () => this.postMessage({ command: 'pr.add-milestone' });
 	public removeMilestone = () => this.postMessage({ command: 'pr.remove-milestone' });
 	public addAssignees = () => this.postMessage({ command: 'pr.add-assignees' });
+	public addAssigneeYourself = () => this.postMessage({ command: 'pr.add-assignee-yourself' });
 	public addLabels = () => this.postMessage({ command: 'pr.add-labels' });
 
 	public deleteComment = async (args: { id: number; pullRequestReviewId?: number }) => {
@@ -162,6 +163,14 @@ export class PRContext {
 		this.updatePR(state);
 	}
 
+	public async updateAutoMerge({ autoMerge, autoMergeMethod }: { autoMerge?: boolean, autoMergeMethod?: MergeMethod }) {
+		const response: { autoMerge: boolean, autoMergeMethod?: MergeMethod } = await this.postMessage({ command: 'pr.update-automerge', args: { autoMerge, autoMergeMethod } });
+		const state = this.pr;
+		state.autoMerge = response.autoMerge;
+		state.autoMergeMethod = response.autoMergeMethod;
+		this.updatePR(state);
+	}
+
 	public openDiff = (comment: IComment) => this.postMessage({ command: 'pr.open-diff', args: { comment } });
 
 	setPR = (pr: PullRequest) => {
@@ -199,8 +208,7 @@ export class PRContext {
 				message.branchTypes && message.branchTypes.map((branchType: string) => {
 					if (branchType === 'local') {
 						stateChange.isLocalHeadDeleted = true;
-					}
-					else if (branchType === 'remote') {
+					} else if ((branchType === 'remote') || (branchType === 'upstream')) {
 						stateChange.isRemoteHeadDeleted = true;
 					}
 				});

@@ -10,9 +10,10 @@ import { ReviewEvent as CommonReviewEvent } from '../common/timelineEvent';
 import { formatError } from '../common/utils';
 import { getNonce, IRequestMessage, WebviewViewBase } from '../common/webview';
 import { FolderRepositoryManager } from './folderRepositoryManager';
-import { GithubItemStateEnum, MergeMethod, ReviewEvent, ReviewState } from './interface';
+import { GithubItemStateEnum, ReviewEvent, ReviewState } from './interface';
 import { PullRequestModel } from './pullRequestModel';
 import { getDefaultMergeMethod } from './pullRequestOverview';
+import { PullRequestView } from './pullRequestOverviewCommon';
 import { isInCodespaces, parseReviewers } from './utils';
 
 export class PullRequestViewProvider extends WebviewViewBase implements vscode.WebviewViewProvider {
@@ -113,6 +114,7 @@ export class PullRequestViewProvider extends WebviewViewBase implements vscode.W
 			this._prChangeListener?.dispose();
 			this._prChangeListener = pullRequestModel.onDidInvalidate(() => this.updatePullRequest(pullRequestModel));
 		}
+		this._item = pullRequestModel;
 		return Promise.all([
 			this._folderRepositoryManager.resolvePullRequest(
 				pullRequestModel.remote.owner,
@@ -123,9 +125,10 @@ export class PullRequestViewProvider extends WebviewViewBase implements vscode.W
 			pullRequestModel.getTimelineEvents(),
 			pullRequestModel.getReviewRequests(),
 			this._folderRepositoryManager.getBranchNameForPullRequest(pullRequestModel),
+			this._folderRepositoryManager.getPullRequestRepositoryDefaultBranch(pullRequestModel)
 		])
 			.then(result => {
-				const [pullRequest, repositoryAccess, timelineEvents, requestedReviewers, branchInfo] = result;
+				const [pullRequest, repositoryAccess, timelineEvents, requestedReviewers, branchInfo, defaultBranch] = result;
 				if (!pullRequest) {
 					throw new Error(
 						`Fail to resolve Pull Request #${pullRequestModel.number} in ${pullRequestModel.remote.owner}/${pullRequestModel.remote.repositoryName}`,
@@ -144,11 +147,8 @@ export class PullRequestViewProvider extends WebviewViewBase implements vscode.W
 				const hasWritePermission = repositoryAccess!.hasWritePermission;
 				const mergeMethodsAvailability = repositoryAccess!.mergeMethodsAvailability;
 				const canEdit = hasWritePermission || this._item.canEdit();
-				const preferredMergeMethod = vscode.workspace
-					.getConfiguration('githubPullRequests')
-					.get<MergeMethod>('defaultMergeMethod');
-				const defaultMergeMethod = getDefaultMergeMethod(mergeMethodsAvailability, preferredMergeMethod);
-				const currentUser = this._folderRepositoryManager.getCurrentUser(this._item);
+				const defaultMergeMethod = getDefaultMergeMethod(mergeMethodsAvailability);
+				const currentUser = this._folderRepositoryManager.getCurrentUser(this._item.githubRepository);
 				this._existingReviewers = parseReviewers(
 					requestedReviewers ?? [],
 					timelineEvents ?? [],
@@ -193,6 +193,7 @@ export class PullRequestViewProvider extends WebviewViewBase implements vscode.W
 						events: [],
 						mergeMethodsAvailability,
 						defaultMergeMethod,
+						repositoryDefaultBranch: defaultBranch,
 						isIssue: false,
 						isAuthor: currentUser.login === pullRequest.author.login,
 						reviewers: this._existingReviewers,
@@ -291,123 +292,11 @@ export class PullRequestViewProvider extends WebviewViewBase implements vscode.W
 	}
 
 	private async deleteBranch(message: IRequestMessage<any>) {
-		const branchInfo = await this._folderRepositoryManager.getBranchNameForPullRequest(this._item);
-		const actions: (vscode.QuickPickItem & { type: 'upstream' | 'local' | 'remote' | 'suspend' })[] = [];
-
-		if (this._item.isResolved()) {
-			const branchHeadRef = this._item.head.ref;
-
-			const defaultBranch = await this._folderRepositoryManager.getPullRequestRepositoryDefaultBranch(this._item);
-			const isDefaultBranch = defaultBranch === this._item.head.ref;
-			if (!isDefaultBranch) {
-				actions.push({
-					label: `Delete remote branch ${this._item.remote.remoteName}/${branchHeadRef}`,
-					description: `${this._item.remote.normalizedHost}/${this._item.remote.owner}/${this._item.remote.repositoryName}`,
-					type: 'upstream',
-					picked: true,
-				});
-			}
-		}
-
-		if (branchInfo) {
-			const preferredLocalBranchDeletionMethod = vscode.workspace
-				.getConfiguration('githubPullRequests')
-				.get<boolean>('defaultDeletionMethod.selectLocalBranch');
-			actions.push({
-				label: `Delete local branch ${branchInfo.branch}`,
-				type: 'local',
-				picked: !!preferredLocalBranchDeletionMethod,
-			});
-
-			const preferredRemoteDeletionMethod = vscode.workspace
-				.getConfiguration('githubPullRequests')
-				.get<boolean>('defaultDeletionMethod.selectRemote');
-
-			if (branchInfo.remote && branchInfo.createdForPullRequest && !branchInfo.remoteInUse) {
-				actions.push({
-					label: `Delete remote ${branchInfo.remote}, which is no longer used by any other branch`,
-					type: 'remote',
-					picked: !!preferredRemoteDeletionMethod,
-				});
-			}
-		}
-
-		if (vscode.env.remoteName === 'codespaces') {
-			actions.push({
-				label: 'Suspend Codespace',
-				type: 'suspend'
-			});
-		}
-
-		if (!actions.length) {
-			vscode.window.showWarningMessage(
-				`There is no longer an upstream or local branch for Pull Request #${this._item.number}`,
-			);
-			this._replyMessage(message, {
-				cancelled: true,
-			});
-
-			return;
-		}
-
-		const selectedActions = await vscode.window.showQuickPick(actions, {
-			canPickMany: true,
-			ignoreFocusOut: true,
-		});
-
-		const deletedBranchTypes: string[] = [];
-
-		if (selectedActions) {
-			const isBranchActive = this._item.equals(this._folderRepositoryManager.activePullRequest);
-
-			const promises = selectedActions.map(async action => {
-				switch (action.type) {
-					case 'upstream':
-						await this._folderRepositoryManager.deleteBranch(this._item);
-						deletedBranchTypes.push(action.type);
-						return this._folderRepositoryManager.repository.fetch({ prune: true });
-					case 'local':
-						if (isBranchActive) {
-							if (this._folderRepositoryManager.repository.state.workingTreeChanges.length) {
-								const response = await vscode.window.showWarningMessage(
-									`Your local changes will be lost, do you want to continue?`,
-									{ modal: true },
-									'Yes',
-								);
-								if (response === 'Yes') {
-									await vscode.commands.executeCommand('git.cleanAll');
-								} else {
-									return;
-								}
-							}
-							const defaultBranch = await this._folderRepositoryManager.getPullRequestRepositoryDefaultBranch(
-								this._item,
-							);
-							await this._folderRepositoryManager.repository.checkout(defaultBranch);
-						}
-						await this._folderRepositoryManager.repository.deleteBranch(branchInfo!.branch, true);
-						return deletedBranchTypes.push(action.type);
-					case 'remote':
-						await this._folderRepositoryManager.repository.removeRemote(branchInfo!.remote!);
-						return deletedBranchTypes.push(action.type);
-					case 'suspend':
-						await vscode.commands.executeCommand('github.codespaces.disconnectSuspend');
-						return deletedBranchTypes.push(action.type);
-				}
-			});
-
-			await Promise.all(promises);
-
-			vscode.commands.executeCommand('pr.refreshList');
-
-			this._postMessage({
-				command: 'pr.deleteBranch',
-				branchTypes: deletedBranchTypes
-			});
+		const result = await PullRequestView.deleteBranch(this._folderRepositoryManager, this._item);
+		if (result.isReply) {
+			this._replyMessage(message, result.message);
 		} else {
-			this._replyMessage(message, {
-				cancelled: true,
-			});
+			this._postMessage(result.message);
 		}
 	}
 

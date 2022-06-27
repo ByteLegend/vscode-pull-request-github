@@ -10,12 +10,14 @@ import { Repository } from '../api/api';
 import { GitApiImpl } from '../api/api1';
 import { IComment, IReviewThread, Reaction } from '../common/comment';
 import { DiffHunk, parseDiffHunk } from '../common/diffHunk';
+import Logger from '../common/logger';
 import { Resource } from '../common/resources';
+import { OVERRIDE_DEFAULT_BRANCH } from '../common/settingKeys';
 import * as Common from '../common/timelineEvent';
 import { uniqBy } from '../common/utils';
 import { OctokitCommon } from './common';
 import { AuthProvider } from './credentials';
-import { SETTINGS_NAMESPACE } from './folderRepositoryManager';
+import { PullRequestDefaults, SETTINGS_NAMESPACE } from './folderRepositoryManager';
 import { GitHubRepository, ViewerPermission } from './githubRepository';
 import * as GraphQL from './graphql';
 import {
@@ -25,15 +27,33 @@ import {
 	IMilestone,
 	Issue,
 	ISuggestedReviewer,
+	MergeMethod,
 	PullRequest,
 	PullRequestMergeability,
 	ReviewState,
 	User,
 } from './interface';
+import { IssueModel } from './issueModel';
 import { GHPRComment, GHPRCommentThread } from './prComment';
 
 export interface CommentReactionHandler {
 	toggleReaction(comment: vscode.Comment, reaction: vscode.CommentReaction): Promise<void>;
+}
+
+export type ParsedIssue = {
+	owner: string | undefined;
+	name: string | undefined;
+	issueNumber: number;
+	commentNumber?: number;
+};
+
+export function threadRange(startLine: number, endLine: number, endCharacter?: number): vscode.Range {
+	if ((startLine !== endLine) && (endCharacter === undefined)) {
+		endCharacter = 300; // 300 is a "large" number that will select a lot of the line since don't know anything about the line length
+	} else if (!endCharacter) {
+		endCharacter = 0;
+	}
+	return new vscode.Range(startLine, 0, endLine, endCharacter);
 }
 
 export function createVSCodeCommentThreadForReviewThread(
@@ -41,13 +61,14 @@ export function createVSCodeCommentThreadForReviewThread(
 	range: vscode.Range,
 	thread: IReviewThread,
 	commentController: vscode.CommentController,
+	currentUser: string
 ): GHPRCommentThread {
 	const vscodeThread = commentController.createCommentThread(uri, range, []);
 
 	(vscodeThread as GHPRCommentThread).gitHubThreadId = thread.id;
 
 	vscodeThread.comments = thread.comments.map(comment => new GHPRComment(comment, vscodeThread as GHPRCommentThread));
-	(vscodeThread as GHPRCommentThread).isResolved = thread.isResolved;
+	vscodeThread.state = isResolvedToResolvedState(thread.isResolved);
 
 	if (thread.viewerCanResolve && !thread.isResolved) {
 		vscodeThread.contextValue = 'canResolve';
@@ -56,17 +77,21 @@ export function createVSCodeCommentThreadForReviewThread(
 	}
 
 	updateCommentThreadLabel(vscodeThread as GHPRCommentThread);
-	vscodeThread.collapsibleState = getCommentCollapsibleState(thread.isResolved);
+	vscodeThread.collapsibleState = getCommentCollapsibleState(thread, undefined, currentUser);
 
 	return vscodeThread as GHPRCommentThread;
 }
 
+function isResolvedToResolvedState(isResolved: boolean) {
+	return isResolved ? vscode.CommentThreadState.Resolved : vscode.CommentThreadState.Unresolved;
+}
 
 export const COMMENT_EXPAND_STATE_SETTING = 'commentExpandState';
 export const COMMENT_EXPAND_STATE_COLLAPSE_VALUE = 'collapseAll';
 export const COMMENT_EXPAND_STATE_EXPAND_VALUE = 'expandUnresolved';
-export function getCommentCollapsibleState(isResolved: boolean, expand?: boolean) {
-	if (isResolved) {
+export function getCommentCollapsibleState(thread: IReviewThread, expand?: boolean, currentUser?: string) {
+	if (thread.isResolved
+		|| (currentUser && thread.comments[thread.comments.length - 1].user?.login === currentUser)) {
 		return vscode.CommentThreadCollapsibleState.Collapsed;
 	}
 	if (expand === undefined) {
@@ -77,25 +102,41 @@ export function getCommentCollapsibleState(isResolved: boolean, expand?: boolean
 		? vscode.CommentThreadCollapsibleState.Expanded : vscode.CommentThreadCollapsibleState.Collapsed;
 }
 
-export function updateThread(vscodeThread: GHPRCommentThread, reviewThread: IReviewThread, expand?: boolean) {
+
+export function updateThreadWithRange(vscodeThread: GHPRCommentThread, reviewThread: IReviewThread, expand?: boolean) {
+	const editors = vscode.window.visibleTextEditors;
+	for (let editor of editors) {
+		if (editor.document.uri.toString() === vscodeThread.uri.toString()) {
+			const endLine = editor.document.lineAt(vscodeThread.range.end.line);
+			const range = new vscode.Range(vscodeThread.range.start.line, 0, vscodeThread.range.end.line, endLine.text.length);
+			updateThread(vscodeThread, reviewThread, expand, range);
+			break;
+		}
+	}
+}
+
+export function updateThread(vscodeThread: GHPRCommentThread, reviewThread: IReviewThread, expand?: boolean, range?: vscode.Range) {
 	if (reviewThread.viewerCanResolve && !reviewThread.isResolved) {
 		vscodeThread.contextValue = 'canResolve';
 	} else if (reviewThread.viewerCanUnresolve && reviewThread.isResolved) {
 		vscodeThread.contextValue = 'canUnresolve';
 	}
 
-	if (vscodeThread.isResolved !== reviewThread.isResolved) {
-		vscodeThread.isResolved = reviewThread.isResolved;
+	const newResolvedState = isResolvedToResolvedState(reviewThread.isResolved);
+	if (vscodeThread.state !== newResolvedState) {
+		vscodeThread.state = newResolvedState;
 	}
-	vscodeThread.collapsibleState = getCommentCollapsibleState(reviewThread.isResolved, expand);
-
+	vscodeThread.collapsibleState = getCommentCollapsibleState(reviewThread, expand);
+	if (range) {
+		vscodeThread.range = range;
+	}
 	vscodeThread.comments = reviewThread.comments.map(c => new GHPRComment(c, vscodeThread));
 	updateCommentThreadLabel(vscodeThread);
 }
 
 export function updateCommentThreadLabel(thread: GHPRCommentThread) {
-	if (thread.isResolved) {
-		thread.label = 'This thread has been marked as resolved';
+	if (thread.state === vscode.CommentThreadState.Resolved) {
+		thread.label = 'Marked as resolved';
 		return;
 	}
 
@@ -165,7 +206,11 @@ export function convertRESTHeadToIGitHubRef(head: OctokitCommon.PullsListRespons
 		label: head.label,
 		ref: head.ref,
 		sha: head.sha,
-		repo: { cloneUrl: head.repo.clone_url },
+		repo: {
+			cloneUrl: head.repo.clone_url,
+			owner: head.repo.owner!.login,
+			name: head.repo.name
+		},
 	};
 }
 
@@ -354,8 +399,10 @@ export function parseGraphQLReviewThread(thread: GraphQL.ReviewThread): IReviewT
 		viewerCanResolve: thread.viewerCanResolve,
 		viewerCanUnresolve: thread.viewerCanUnresolve,
 		path: thread.path,
-		line: thread.line,
-		originalLine: thread.originalLine,
+		startLine: thread.startLine ?? thread.line,
+		endLine: thread.line,
+		originalStartLine: thread.originalStartLine ?? thread.originalLine,
+		originalEndLine: thread.originalLine,
 		diffSide: thread.diffSide,
 		isOutdated: thread.isOutdated,
 		comments: thread.comments.nodes.map(comment => parseGraphQLComment(comment, thread.isResolved)),
@@ -442,6 +489,8 @@ function parseRef(refName: string, oid: string, repository?: GraphQL.RefReposito
 		sha: oid,
 		repo: {
 			cloneUrl: repository.url,
+			owner: repository.owner.login,
+			name: refName
 		},
 	};
 }
@@ -479,7 +528,17 @@ export function parseMilestone(
 	};
 }
 
-export function parseMergeability(mergeability: 'UNKNOWN' | 'MERGEABLE' | 'CONFLICTING'): PullRequestMergeability {
+function parseMergeMethod(mergeMethod: 'MERGE' | 'SQUASH' | 'REBASE' | undefined): MergeMethod | undefined {
+	switch (mergeMethod) {
+		case 'MERGE': return 'merge';
+		case 'REBASE': return 'rebase';
+		case 'SQUASH': return 'squash';
+	}
+}
+
+export function parseMergeability(mergeability: 'UNKNOWN' | 'MERGEABLE' | 'CONFLICTING',
+	mergeStateStatus: 'BEHIND' | 'BLOCKED' | 'CLEAN' | 'DIRTY' | 'HAS_HOOKS' | 'UNKNOWN' | 'UNSTABLE'): PullRequestMergeability {
+	let parsed: PullRequestMergeability;
 	switch (mergeability) {
 		case 'UNKNOWN':
 			return PullRequestMergeability.Unknown;
@@ -491,11 +550,9 @@ export function parseMergeability(mergeability: 'UNKNOWN' | 'MERGEABLE' | 'CONFL
 }
 
 export function parseGraphQLPullRequest(
-	pullRequest: GraphQL.PullRequestResponse,
+	graphQLPullRequest: GraphQL.PullRequest,
 	githubRepository: GitHubRepository,
 ): PullRequest {
-	const graphQLPullRequest = pullRequest.repository.pullRequest;
-
 	return {
 		id: graphQLPullRequest.databaseId,
 		graphNodeId: graphQLPullRequest.id,
@@ -513,7 +570,10 @@ export function parseGraphQLPullRequest(
 		base: parseRef(graphQLPullRequest.baseRef?.name ?? graphQLPullRequest.baseRefName, graphQLPullRequest.baseRefOid, graphQLPullRequest.baseRepository),
 		user: parseAuthor(graphQLPullRequest.author, githubRepository),
 		merged: graphQLPullRequest.merged,
-		mergeable: parseMergeability(graphQLPullRequest.mergeable),
+		mergeable: parseMergeability(graphQLPullRequest.mergeable, graphQLPullRequest.mergeStateStatus),
+		autoMerge: !!graphQLPullRequest.autoMergeRequest,
+		autoMergeMethod: parseMergeMethod(graphQLPullRequest.autoMergeRequest?.mergeMethod),
+		allowAutoMerge: graphQLPullRequest.viewerCanEnableAutoMerge || graphQLPullRequest.viewerCanDisableAutoMerge,
 		labels: graphQLPullRequest.labels.nodes,
 		isDraft: graphQLPullRequest.isDraft,
 		suggestedReviewers: parseSuggestedReviewers(graphQLPullRequest.suggestedReviewers),
@@ -587,7 +647,7 @@ export function parseGraphQLIssuesRequest(
 		base: parseRef(graphQLPullRequest.baseRef?.name ?? graphQLPullRequest.baseRefName, graphQLPullRequest.baseRefOid, graphQLPullRequest.baseRepository),
 		user: parseAuthor(graphQLPullRequest.author, githubRepository),
 		merged: graphQLPullRequest.merged,
-		mergeable: parseMergeability(graphQLPullRequest.mergeable),
+		mergeable: parseMergeability(graphQLPullRequest.mergeable, graphQLPullRequest.mergeStateStatus),
 		labels: graphQLPullRequest.labels.nodes,
 		isDraft: graphQLPullRequest.isDraft,
 		suggestedReviewers: parseSuggestedReviewers(graphQLPullRequest.suggestedReviewers),
@@ -864,13 +924,15 @@ export function parseGraphQLViewerPermission(
 	return ViewerPermission.Unknown;
 }
 
+export function isFileInRepo(repository: Repository, file: vscode.Uri): boolean {
+	return file.path.toLowerCase() === repository.rootUri.path.toLowerCase() ||
+		(file.path.toLowerCase().startsWith(repository.rootUri.path.toLowerCase()) &&
+			file.path.substring(repository.rootUri.path.length).startsWith('/'));
+}
+
 export function getRepositoryForFile(gitAPI: GitApiImpl, file: vscode.Uri): Repository | undefined {
 	for (const repository of gitAPI.repositories) {
-		if (
-			file.path.toLowerCase() === repository.rootUri.path.toLowerCase() ||
-			(file.path.toLowerCase().startsWith(repository.rootUri.path.toLowerCase()) &&
-				file.path.substring(repository.rootUri.path.length).startsWith('/'))
-		) {
+		if (isFileInRepo(repository, file)) {
 			return repository;
 		}
 	}
@@ -964,4 +1026,78 @@ export function generateGravatarUrl(gravatarId: string | undefined, size: number
 export function getAvatarWithEnterpriseFallback(avatarUrl: string, email: string | undefined, authProviderId: AuthProvider): string | undefined {
 	return authProviderId === AuthProvider.github ? avatarUrl : (email ? generateGravatarUrl(
 		crypto.createHash('md5').update(email?.trim()?.toLowerCase()).digest('hex')) : undefined);
+}
+
+export function getPullsUrl(repo: GitHubRepository) {
+	return vscode.Uri.parse(`https://${repo.remote.host}/${repo.remote.owner}/${repo.remote.repositoryName}/pulls`);
+}
+
+export function getIssuesUrl(repo: GitHubRepository) {
+	return vscode.Uri.parse(`https://${repo.remote.host}/${repo.remote.owner}/${repo.remote.repositoryName}/issues`);
+}
+
+export function sanitizeIssueTitle(title: string): string {
+	const regex = /[~^:;'".,~#?%*[\]@\\{}()]|\/\//g;
+
+	return title.replace(regex, '').trim().substring(0, 150).replace(/\s+/g, '-');
+}
+
+const VARIABLE_PATTERN = /\$\{(.*?)\}/g;
+export async function variableSubstitution(
+	value: string,
+	issueModel?: IssueModel,
+	defaults?: PullRequestDefaults,
+	user?: string,
+): Promise<string> {
+	return value.replace(VARIABLE_PATTERN, (match: string, variable: string) => {
+		switch (variable) {
+			case 'user':
+				return user ? user : match;
+			case 'issueNumber':
+				return issueModel ? `${issueModel.number}` : match;
+			case 'issueNumberLabel':
+				return issueModel ? `${getIssueNumberLabel(issueModel, defaults)}` : match;
+			case 'issueTitle':
+				return issueModel ? issueModel.title : match;
+			case 'repository':
+				return defaults ? defaults.repo : match;
+			case 'owner':
+				return defaults ? defaults.owner : match;
+			case 'sanitizedIssueTitle':
+				return issueModel ? sanitizeIssueTitle(issueModel.title) : match; // check what characters are permitted
+			case 'sanitizedLowercaseIssueTitle':
+				return issueModel ? sanitizeIssueTitle(issueModel.title).toLowerCase() : match;
+			default:
+				return match;
+		}
+	});
+}
+
+export function getIssueNumberLabel(issue: IssueModel, repo?: PullRequestDefaults) {
+	const parsedIssue: ParsedIssue = { issueNumber: issue.number, owner: undefined, name: undefined };
+	if (
+		repo &&
+		(repo.owner.toLowerCase() !== issue.remote.owner.toLowerCase() ||
+			repo.repo.toLowerCase() !== issue.remote.repositoryName.toLowerCase())
+	) {
+		parsedIssue.owner = issue.remote.owner;
+		parsedIssue.name = issue.remote.repositoryName;
+	}
+	return getIssueNumberLabelFromParsed(parsedIssue);
+}
+
+export function getIssueNumberLabelFromParsed(parsed: ParsedIssue) {
+	if (!parsed.owner || !parsed.name) {
+		return `#${parsed.issueNumber}`;
+	} else {
+		return `${parsed.owner}/${parsed.name}#${parsed.issueNumber}`;
+	}
+}
+
+export function getOverrideBranch(): string | undefined {
+	const overrideSetting = vscode.workspace.getConfiguration(SETTINGS_NAMESPACE).get<string | undefined>(OVERRIDE_DEFAULT_BRANCH);
+	if (overrideSetting) {
+		Logger.debug('Using override setting for default branch', GitHubRepository.ID);
+		return overrideSetting;
+	}
 }

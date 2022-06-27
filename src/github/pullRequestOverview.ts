@@ -25,6 +25,7 @@ import {
 } from './interface';
 import { IssueOverviewPanel } from './issueOverview';
 import { PullRequestModel } from './pullRequestModel';
+import { PullRequestView } from './pullRequestOverviewCommon';
 import { isInCodespaces, parseReviewers } from './utils';
 
 type MilestoneQuickPickItem = vscode.QuickPickItem & { id: string; milestone: IMilestone };
@@ -188,12 +189,10 @@ export class PullRequestOverviewPanel extends IssueOverviewPanel<PullRequestMode
 				const hasWritePermission = repositoryAccess!.hasWritePermission;
 				const mergeMethodsAvailability = repositoryAccess!.mergeMethodsAvailability;
 				const canEdit = hasWritePermission || this._item.canEdit();
-				const preferredMergeMethod = vscode.workspace
-					.getConfiguration('githubPullRequests')
-					.get<MergeMethod>('defaultMergeMethod');
-				const defaultMergeMethod = getDefaultMergeMethod(mergeMethodsAvailability, preferredMergeMethod);
+
+				const defaultMergeMethod = getDefaultMergeMethod(mergeMethodsAvailability);
 				this._existingReviewers = parseReviewers(requestedReviewers!, timelineEvents!, pullRequest.author);
-				const currentUser = this._folderRepositoryManager.getCurrentUser(this._item);
+				const currentUser = this._folderRepositoryManager.getCurrentUser(this._item.githubRepository);
 
 				const isCrossRepository =
 					pullRequest.base &&
@@ -236,6 +235,9 @@ export class PullRequestOverviewPanel extends IssueOverviewPanel<PullRequestMode
 						isDraft: pullRequest.isDraft,
 						mergeMethodsAvailability,
 						defaultMergeMethod,
+						autoMerge: pullRequest.autoMerge,
+						allowAutoMerge: pullRequest.allowAutoMerge,
+						autoMergeMethod: pullRequest.autoMergeMethod,
 						isIssue: false,
 						milestone: pullRequest.milestone,
 						assignees: pullRequest.assignees,
@@ -309,6 +311,8 @@ export class PullRequestOverviewPanel extends IssueOverviewPanel<PullRequestMode
 				return this.addMilestone(message);
 			case 'pr.add-assignees':
 				return this.addAssignees(message);
+			case 'pr.add-assignee-yourself':
+				return this.addAssigneeYourself(message);
 			case 'pr.remove-reviewer':
 				return this.removeReviewer(message);
 			case 'pr.remove-assignee':
@@ -317,6 +321,8 @@ export class PullRequestOverviewPanel extends IssueOverviewPanel<PullRequestMode
 				return this.copyPrLink();
 			case 'pr.openOnGitHub':
 				return openPullRequestOnGitHub(this._item, (this._item as any)._telemetry);
+			case 'pr.update-automerge':
+				return this.updateAutoMerge(message);
 		}
 	}
 
@@ -549,6 +555,22 @@ export class PullRequestOverviewPanel extends IssueOverviewPanel<PullRequestMode
 		}
 	}
 
+	private async addAssigneeYourself(message: IRequestMessage<void>): Promise<void> {
+		try {
+			const currentUser = this._folderRepositoryManager.getCurrentUser();
+
+			this._item.assignees = this._item.assignees?.concat(currentUser);
+
+			await this._item.updateAssignees([currentUser.login]);
+
+			this._replyMessage(message, {
+				added: [currentUser],
+			});
+		} catch (e) {
+			vscode.window.showErrorMessage(formatError(e));
+		}
+	}
+
 	private async removeReviewer(message: IRequestMessage<string>): Promise<void> {
 		try {
 			await this._item.deleteReviewRequest(message.args);
@@ -645,120 +667,12 @@ export class PullRequestOverviewPanel extends IssueOverviewPanel<PullRequestMode
 	}
 
 	private async deleteBranch(message: IRequestMessage<any>) {
-		const branchInfo = await this._folderRepositoryManager.getBranchNameForPullRequest(this._item);
-		const actions: (vscode.QuickPickItem & { type: 'upstream' | 'local' | 'remote' | 'suspend' })[] = [];
-
-		if (this._item.isResolved()) {
-			const branchHeadRef = this._item.head.ref;
-
-			const isDefaultBranch = this._repositoryDefaultBranch === this._item.head.ref;
-			if (!isDefaultBranch && !this._item.isRemoteHeadDeleted) {
-				actions.push({
-					label: `Delete remote branch ${this._item.remote.remoteName}/${branchHeadRef}`,
-					description: `${this._item.remote.normalizedHost}/${this._item.remote.owner}/${this._item.remote.repositoryName}`,
-					type: 'upstream',
-					picked: true,
-				});
-			}
-		}
-
-		if (branchInfo) {
-			const preferredLocalBranchDeletionMethod = vscode.workspace
-				.getConfiguration('githubPullRequests')
-				.get<boolean>('defaultDeletionMethod.selectLocalBranch');
-			actions.push({
-				label: `Delete local branch ${branchInfo.branch}`,
-				type: 'local',
-				picked: !!preferredLocalBranchDeletionMethod,
-			});
-
-			const preferredRemoteDeletionMethod = vscode.workspace
-				.getConfiguration('githubPullRequests')
-				.get<boolean>('defaultDeletionMethod.selectRemote');
-
-			if (branchInfo.remote && branchInfo.createdForPullRequest && !branchInfo.remoteInUse) {
-				actions.push({
-					label: `Delete remote ${branchInfo.remote}, which is no longer used by any other branch`,
-					type: 'remote',
-					picked: !!preferredRemoteDeletionMethod,
-				});
-			}
-		}
-
-		if (vscode.env.remoteName === 'codespaces') {
-			actions.push({
-				label: 'Suspend Codespace',
-				type: 'suspend'
-			});
-		}
-
-		if (!actions.length) {
-			vscode.window.showWarningMessage(
-				`There is no longer an upstream or local branch for Pull Request #${this._item.number}`,
-			);
-			this._replyMessage(message, {
-				cancelled: true,
-			});
-
-			return;
-		}
-
-		const selectedActions = await vscode.window.showQuickPick(actions, {
-			canPickMany: true,
-			ignoreFocusOut: true,
-		});
-
-		const deletedBranchTypes: string[] = [];
-
-		if (selectedActions) {
-			const isBranchActive = this._item.equals(this._folderRepositoryManager.activePullRequest);
-
-			const promises = selectedActions.map(async action => {
-				switch (action.type) {
-					case 'upstream':
-						await this._folderRepositoryManager.deleteBranch(this._item);
-						deletedBranchTypes.push(action.type);
-						return this._folderRepositoryManager.repository.fetch({ prune: true });
-					case 'local':
-						if (isBranchActive) {
-							if (this._folderRepositoryManager.repository.state.workingTreeChanges.length) {
-								const response = await vscode.window.showWarningMessage(
-									`Your local changes will be lost, do you want to continue?`,
-									{ modal: true },
-									'Yes',
-								);
-								if (response === 'Yes') {
-									await vscode.commands.executeCommand('git.cleanAll');
-								} else {
-									return;
-								}
-							}
-							await this._folderRepositoryManager.repository.checkout(this._repositoryDefaultBranch);
-						}
-						await this._folderRepositoryManager.repository.deleteBranch(branchInfo!.branch, true);
-						return deletedBranchTypes.push(action.type);
-					case 'remote':
-						deletedBranchTypes.push(action.type);
-						return this._folderRepositoryManager.repository.removeRemote(branchInfo!.remote!);
-					case 'suspend':
-						deletedBranchTypes.push(action.type);
-						return vscode.commands.executeCommand('github.codespaces.disconnectSuspend');
-				}
-			});
-
-			await Promise.all(promises);
-
-			this.refreshPanel();
-			vscode.commands.executeCommand('pr.refreshList');
-
-			this._postMessage({
-				command: 'pr.deleteBranch',
-				branchTypes: deletedBranchTypes
-			});
+		const result = await PullRequestView.deleteBranch(this._folderRepositoryManager, this._item);
+		if (result.isReply) {
+			this._replyMessage(message, result.message);
 		} else {
-			this._replyMessage(message, {
-				cancelled: true,
-			});
+			this.refreshPanel();
+			this._postMessage(result.message);
 		}
 	}
 
@@ -854,7 +768,21 @@ export class PullRequestOverviewPanel extends IssueOverviewPanel<PullRequestMode
 
 	private async copyPrLink(): Promise<void> {
 		await vscode.env.clipboard.writeText(this._item.html_url);
-		vscode.window.showInformationMessage(`Copied link to PR ${this._item.title}!`);
+		vscode.window.showInformationMessage(`Copied link to PR "${this._item.title}"!`);
+	}
+
+	private async updateAutoMerge(message: IRequestMessage<{ autoMerge?: boolean, autoMergeMethod: MergeMethod }>): Promise<void> {
+		let replyMessage: { autoMerge: boolean, autoMergeMethod?: MergeMethod };
+		if (!message.args.autoMerge && !this._item.autoMerge) {
+			replyMessage = { autoMerge: false };
+		} else if ((message.args.autoMerge === false) && this._item.autoMerge) {
+			await this._item.disableAutoMerge();
+			replyMessage = { autoMerge: this._item.autoMerge };
+		} else {
+			await this._item.enableAutoMerge(message.args.autoMergeMethod);
+			replyMessage = { autoMerge: this._item.autoMerge, autoMergeMethod: this._item.autoMergeMethod };
+		}
+		this._replyMessage(message, replyMessage);
 	}
 
 	protected editCommentPromise(comment: IComment, text: string): Promise<IComment> {
@@ -876,13 +804,13 @@ export class PullRequestOverviewPanel extends IssueOverviewPanel<PullRequestMode
 
 export function getDefaultMergeMethod(
 	methodsAvailability: MergeMethodsAvailability,
-	userPreferred: MergeMethod | undefined,
 ): MergeMethod {
+	const userPreferred = vscode.workspace.getConfiguration('githubPullRequests').get<MergeMethod>('defaultMergeMethod');
 	// Use default merge method specified by user if it is available
 	if (userPreferred && methodsAvailability.hasOwnProperty(userPreferred) && methodsAvailability[userPreferred]) {
 		return userPreferred;
 	}
 	const methods: MergeMethod[] = ['merge', 'squash', 'rebase'];
-	// GitHub requires to have at leas one merge method to be enabled; use first available as default
+	// GitHub requires to have at least one merge method to be enabled; use first available as default
 	return methods.find(method => methodsAvailability[method])!;
 }

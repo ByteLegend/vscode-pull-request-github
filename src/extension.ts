@@ -18,7 +18,7 @@ import { Resource } from './common/resources';
 import { SessionState } from './common/sessionState';
 import { BRANCH_PUBLISH, FILE_LIST_LAYOUT, PR_SETTINGS_NAMESPACE } from './common/settingKeys';
 import { TemporaryState } from './common/temporaryState';
-import { handler as uriHandler } from './common/uri';
+import { Schemes, handler as uriHandler } from './common/uri';
 import { EXTENSION_ID, FOCUS_REVIEW_MODE } from './constants';
 import { createExperimentationService, ExperimentationTelemetry } from './experimentationService';
 import { setSyncedKeys } from './extensionState';
@@ -35,6 +35,7 @@ import { PullRequestChangesTreeDataProvider } from './view/prChangesTreeDataProv
 import { PullRequestsTreeDataProvider } from './view/prsTreeDataProvider';
 import { ReviewManager, ShowPullRequest } from './view/reviewManager';
 import { ReviewsManager } from './view/reviewsManager';
+import { WebviewViewCoordinator } from './view/webviewViewCoordinator';
 
 const aiKey = 'AIF-d9b70cd4-b9f9-4d70-929b-a071c400b217';
 
@@ -50,7 +51,10 @@ async function init(
 	repositories: Repository[],
 	tree: PullRequestsTreeDataProvider,
 	liveshareApiPromise: Promise<LiveShare | undefined>,
-	showPRController: ShowPullRequest
+	showPRController: ShowPullRequest,
+	reposManager: RepositoriesManager,
+	folderManagers: FolderRepositoryManager[],
+	sessionState: SessionState,
 ): Promise<void> {
 	context.subscriptions.push(Logger);
 	Logger.appendLine('Git repository found, initializing review manager and pr tree view.');
@@ -131,15 +135,6 @@ async function init(
 		});
 	}
 
-	const sessionState = new SessionState(context);
-	const folderManagers = repositories.map(
-		repository => new FolderRepositoryManager(context, repository, telemetry, git, credentialStore, sessionState),
-	);
-	context.subscriptions.push(...folderManagers);
-
-	const reposManager = new RepositoriesManager(folderManagers, credentialStore, telemetry, sessionState);
-	context.subscriptions.push(reposManager);
-
 	liveshareApiPromise.then(api => {
 		if (api) {
 			// register the pull request provider to suggest PR contacts
@@ -147,11 +142,12 @@ async function init(
 		}
 	});
 
-	const changesTree = new PullRequestChangesTreeDataProvider(context);
+	const changesTree = new PullRequestChangesTreeDataProvider(context, git, reposManager);
 	context.subscriptions.push(changesTree);
 
+	const activePrViewCoordinator = new WebviewViewCoordinator(context);
 	const reviewManagers = folderManagers.map(
-		folderManager => new ReviewManager(context, folderManager.repository, folderManager, telemetry, changesTree, showPRController, sessionState),
+		folderManager => new ReviewManager(context, folderManager.repository, folderManager, telemetry, changesTree, showPRController, sessionState, activePrViewCoordinator),
 	);
 	context.subscriptions.push(new FileTypeDecorationProvider(reposManager, reviewManagers));
 
@@ -180,7 +176,8 @@ async function init(
 				telemetry,
 				changesTree,
 				showPRController,
-				sessionState
+				sessionState,
+				activePrViewCoordinator
 			);
 			reviewsManager.addReviewManager(newReviewManager);
 			tree.refresh();
@@ -307,14 +304,22 @@ async function deferredActivate(context: vscode.ExtensionContext, apiImpl: GitAp
 	Logger.debug('Creating tree view.', 'Activation');
 	const prTree = new PullRequestsTreeDataProvider(telemetry);
 	context.subscriptions.push(prTree);
-	context.subscriptions.push(vscode.workspace.registerFileSystemProvider('pr', getInMemPRFileSystemProvider(), { isReadonly: true }));
-
 	Logger.appendLine('Looking for git repository');
-
 	const repositories = apiImpl.repositories;
 	Logger.appendLine(`Found ${repositories.length} repositories during activation`);
 
-	await init(context, apiImpl, credentialStore, repositories, prTree, liveshareApiPromise, showPRController);
+	const sessionState = new SessionState(context);
+	const folderManagers = repositories.map(
+		repository => new FolderRepositoryManager(context, repository, telemetry, apiImpl, credentialStore, sessionState),
+	);
+	context.subscriptions.push(...folderManagers);
+
+	const reposManager = new RepositoriesManager(folderManagers, credentialStore, telemetry, sessionState);
+	context.subscriptions.push(reposManager);
+	const inMemPRFileSystemProvider = getInMemPRFileSystemProvider({ reposManager, gitAPI: apiImpl, credentialStore })!;
+	context.subscriptions.push(vscode.workspace.registerFileSystemProvider(Schemes.Pr, inMemPRFileSystemProvider, { isReadonly: true }));
+
+	await init(context, apiImpl, credentialStore, repositories, prTree, liveshareApiPromise, showPRController, reposManager, folderManagers, sessionState);
 }
 
 export async function deactivate() {

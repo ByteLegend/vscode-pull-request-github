@@ -43,7 +43,7 @@ export interface PullRequest {
 	assignees: IAccount[];
 	commitsCount: number;
 	milestone: IMilestone;
-	repositoryDefaultBranch: any;
+	repositoryDefaultBranch: string;
 	/**
 	 * User can edit PR title and description (author or user with push access)
 	 */
@@ -60,6 +60,9 @@ export interface PullRequest {
 	mergeable: PullRequestMergeability;
 	defaultMergeMethod: MergeMethod;
 	mergeMethodsAvailability: MergeMethodsAvailability;
+	autoMerge?: boolean;
+	allowAutoMerge: boolean;
+	autoMergeMethod?: MergeMethod;
 	reviewers: ReviewState[];
 	isDraft?: boolean;
 	isIssue: boolean;

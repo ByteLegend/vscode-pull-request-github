@@ -33,8 +33,11 @@ import { UserHoverProvider } from './userHoverProvider';
 import {
 	createGitHubLink,
 	createGithubPermalink,
+	getIssue,
+	ISSUE_OR_URL_EXPRESSION,
 	ISSUES_CONFIGURATION,
 	NewIssue,
+	parseIssueExpressionOutput,
 	PermalinkInfo,
 	pushAndCreatePR,
 	QUERIES_CONFIGURATION,
@@ -71,7 +74,6 @@ export class IssueFeatureRegistrar implements vscode.Disposable {
 		this.context.subscriptions.push(
 			vscode.workspace.registerFileSystemProvider(NEW_ISSUE_SCHEME, new IssueFileSystemProvider()),
 		);
-		this.registerCompletionProviders();
 		this.context.subscriptions.push(
 			vscode.languages.registerCompletionItemProvider(
 				{ scheme: NEW_ISSUE_SCHEME },
@@ -390,6 +392,8 @@ export class IssueFeatureRegistrar implements vscode.Disposable {
 			}),
 		);
 		this._stateManager.tryInitializeAndWait().then(() => {
+			this.registerCompletionProviders();
+
 			this.context.subscriptions.push(
 				vscode.languages.registerHoverProvider(
 					'*',
@@ -687,10 +691,20 @@ export class IssueFeatureRegistrar implements vscode.Disposable {
 	}
 
 	async startWorking(issue: any) {
-		if (!(issue instanceof IssueModel)) {
-			return;
+		if (issue instanceof IssueModel) {
+			return this.doStartWorking(this.manager.getManagerForIssueModel(issue), issue);
+		} else if (issue instanceof vscode.Uri) {
+			const match = issue.toString().match(ISSUE_OR_URL_EXPRESSION);
+			const parsed = parseIssueExpressionOutput(match);
+			const folderManager = this.manager.folderManagers.find(folderManager =>
+				folderManager.gitHubRepositories.find(repo => repo.remote.owner === parsed?.owner && repo.remote.repositoryName === parsed.name));
+			if (parsed && folderManager) {
+				const issueModel = await getIssue(this._stateManager, folderManager, issue.toString(), parsed);
+				if (issueModel) {
+					return this.doStartWorking(folderManager, issueModel);
+				}
+			}
 		}
-		this.doStartWorking(this.manager.getManagerForIssueModel(issue), issue);
 	}
 
 	async startWorkingBranchPrompt(issueModel: any) {
@@ -1120,7 +1134,7 @@ ${body ?? ''}\n
 			// asExternalUri can throw when in the browser and the embedder doesn't set a uri resolver.
 			return link;
 		}
-		const authority = (uri.scheme === 'https' && /^(vscode|github)\./.test(uri.authority)) ? uri.authority : undefined;
+		const authority = (uri.scheme === 'https' && /^(insiders\.vscode|vscode|github)\./.test(uri.authority)) ? uri.authority : undefined;
 		if (!authority) {
 			return link;
 		}
@@ -1178,8 +1192,7 @@ ${body ?? ''}\n
 	async openPermalink() {
 		const link = await this.getPermalinkWithError();
 		if (link.permalink) {
-			return vscode.env.openExternal(vscode.Uri.parse(
-				link.originalFile ? (await this.getContextualizedLink(link.originalFile, link.permalink)) : link.permalink));
+			return vscode.env.openExternal(vscode.Uri.parse(link.permalink));
 		}
 		return undefined;
 	}

@@ -3,11 +3,11 @@
  *  Licensed under the MIT License. See License.txt in the project root for license information.
  *--------------------------------------------------------------------------------------------*/
 
-import { URLSearchParams } from 'url';
+import { URL, URLSearchParams } from 'url';
 import LRUCache from 'lru-cache';
 import * as marked from 'marked';
 import * as vscode from 'vscode';
-import { Commit, Ref, Remote, Repository } from '../api/api';
+import { Commit, Ref, Remote, Repository, UpstreamRef } from '../api/api';
 import { GitApiImpl } from '../api/api1';
 import { Protocol } from '../common/protocol';
 import { FolderRepositoryManager, PullRequestDefaults } from '../github/folderRepositoryManager';
@@ -15,7 +15,7 @@ import { GithubItemStateEnum, User } from '../github/interface';
 import { IssueModel } from '../github/issueModel';
 import { PullRequestModel } from '../github/pullRequestModel';
 import { RepositoriesManager } from '../github/repositoriesManager';
-import { getRepositoryForFile } from '../github/utils';
+import { getEnterpriseUri, getIssueNumberLabelFromParsed, getRepositoryForFile, ParsedIssue } from '../github/utils';
 import { ReviewManager } from '../view/reviewManager';
 import { CODE_PERMALINK, findCodeLinkLocally } from './issueLinkLookup';
 import { StateManager } from './stateManager';
@@ -27,12 +27,6 @@ export const USER_EXPRESSION: RegExp = /\@([^\s]+)/;
 
 export const MAX_LINE_LENGTH = 150;
 
-export type ParsedIssue = {
-	owner: string | undefined;
-	name: string | undefined;
-	issueNumber: number;
-	commentNumber?: number;
-};
 export const ISSUES_CONFIGURATION: string = 'githubIssues';
 export const QUERIES_CONFIGURATION = 'queries';
 export const DEFAULT_QUERY_CONFIGURATION = 'default';
@@ -405,17 +399,21 @@ async function getUpstream(repository: Repository, commit: Commit): Promise<Remo
 	let bestRemote: Remote | undefined;
 	for (let branchIndex = 0; branchIndex < branchNames.length && !bestRef; branchIndex++) {
 		for (let remoteIndex = 0; remoteIndex < remoteNames.length && !bestRef; remoteIndex++) {
-			const remotes = (
-				await repository.getBranches({
-					contains: commit.hash,
-					remote: true,
-					pattern: `remotes/${remoteNames[remoteIndex].name}/${branchNames[branchIndex]}`,
-					count: 1,
-				})
-			).filter(value => value.remote && value.name);
-			if (remotes && remotes.length > 0) {
-				bestRef = remotes[0];
-				bestRemote = remoteNames[remoteIndex].remote;
+			try {
+				const remotes = (
+					await repository.getBranches({
+						contains: commit.hash,
+						remote: true,
+						pattern: `remotes/${remoteNames[remoteIndex].name}/${branchNames[branchIndex]}`,
+						count: 1,
+					})
+				).filter(value => value.remote && value.name);
+				if (remotes && remotes.length > 0) {
+					bestRef = remotes[0];
+					bestRemote = remoteNames[remoteIndex].remote;
+				}
+			} catch (e) {
+				// continue
 			}
 		}
 	}
@@ -450,13 +448,37 @@ export interface PermalinkInfo {
 }
 
 function getSimpleUpstream(repository: Repository) {
-	if (repository.state.HEAD?.upstream) {
-		for (const remote of repository.state.remotes) {
-			if (repository.state.HEAD.upstream.remote === remote.name) {
-				return remote;
-			}
+	const upstream: UpstreamRef | undefined = repository.state.HEAD?.upstream;
+	for (const remote of repository.state.remotes) {
+		// If we don't have an upstream, then just use the first remote.
+		if (!upstream || (upstream.remote === remote.name)) {
+			return remote;
 		}
 	}
+}
+
+async function getBestPossibleUpstream(repository: Repository, commit: Commit | undefined): Promise<Remote | undefined> {
+	const fallbackUpstream = new Promise<Remote | undefined>(resolve => {
+		resolve(getSimpleUpstream(repository));
+	});
+
+	let upstream: Remote | undefined = commit ? await Promise.race([
+		getUpstream(repository, commit),
+		new Promise<Remote | undefined>(resolve => {
+			setTimeout(() => {
+				resolve(fallbackUpstream);
+			}, 1500);
+		}),
+	]) : await fallbackUpstream;
+
+	if (!upstream || !upstream.fetchUrl) {
+		// Check fallback
+		upstream = await fallbackUpstream;
+		if (!upstream || !upstream.fetchUrl) {
+			return undefined;
+		}
+	}
+	return upstream;
 }
 
 export async function createGithubPermalink(
@@ -481,40 +503,53 @@ export async function createGithubPermalink(
 		if (log.length === 0) {
 			return { permalink: undefined, error: 'No branch on a remote contains the most recent commit for the file.', originalFile: uri };
 		}
-		commit = log[0];
-		commitHash = log[0].hash;
+		// Now that we know that the file existed at some point in the repo, use the head commit to construct the URI.
+		if (repository.state.HEAD?.commit && (log[0].hash !== repository.state.HEAD?.commit)) {
+			commit = await repository.getCommit(repository.state.HEAD.commit);
+		}
+		if (!commit) {
+			commit = log[0];
+		}
+		commitHash = commit.hash;
 	} catch (e) {
 		commitHash = repository.state.HEAD?.commit;
 	}
 
-	const fallbackUpstream = new Promise<Remote | undefined>(resolve => {
-		resolve(getSimpleUpstream(repository));
-	});
-
-	let upstream: Remote | undefined = commit ? await Promise.race([
-		getUpstream(repository, commit),
-		new Promise<Remote | undefined>(resolve => {
-			setTimeout(() => {
-				resolve(fallbackUpstream);
-			}, 1500);
-		}),
-	]) : await fallbackUpstream;
-
+	const upstream = await getBestPossibleUpstream(repository, commit);
 	if (!upstream || !upstream.fetchUrl) {
-		// Check fallback
-		upstream = await fallbackUpstream;
-		if (!upstream || !upstream.fetchUrl) {
-			return { permalink: undefined, error: 'The selection may not exist on any remote.', originalFile: uri };
-		}
+		return { permalink: undefined, error: 'The selection may not exist on any remote.', originalFile: uri };
 	}
-	const pathSegment = uri.path.substring(repository.rootUri.path.length);
 
+	const pathSegment = uri.path.substring(repository.rootUri.path.length);
+	const originOfFetchUrl = getUpstreamOrigin(upstream).replace(/\/$/, '');
 	return {
-		permalink: `https://github.com/${new Protocol(upstream.fetchUrl).nameWithOwner}/blob/${commitHash
+		permalink: `${originOfFetchUrl}/${new Protocol(upstream.fetchUrl).nameWithOwner}/blob/${commitHash
 			}${pathSegment}${rangeString(range)}`,
 		error: undefined,
 		originalFile: uri
 	};
+}
+
+function getUpstreamOrigin(upstream: Remote) {
+	let resultHost: string = 'github.com';
+	const enterpriseUri = getEnterpriseUri();
+	if (enterpriseUri && upstream.fetchUrl) {
+		// upstream's origin by https
+		if (upstream.fetchUrl.startsWith('https://') && !upstream.fetchUrl.startsWith('https://github.com/')) {
+			const host = new URL(upstream.fetchUrl).host;
+			if (host === enterpriseUri.authority) {
+				resultHost = host;
+			}
+		}
+		// upstream's origin by ssh
+		if (upstream.fetchUrl.startsWith('git@') && !upstream.fetchUrl.startsWith('git@github.com')) {
+			const host = upstream.fetchUrl.split('@')[1]?.split(':')[0];
+			if (host === enterpriseUri.authority) {
+				resultHost = host;
+			}
+		}
+	}
+	return `https://${resultHost}`;
 }
 
 function rangeString(range: vscode.Range | undefined) {
@@ -540,76 +575,24 @@ export async function createGitHubLink(
 	if (!folderManager) {
 		return { permalink: undefined, error: 'Current file does not belong to an open repository.', originalFile: undefined };
 	}
-	const defaults = await folderManager.getPullRequestDefaults();
+	let branchName = folderManager.repository.state.HEAD?.name;
+	if (!branchName) {
+		// Fall back to default branch name if we are not currently on a branch
+		const origin = await folderManager.getOrigin();
+		const metadata = await origin.getMetadata();
+		branchName = metadata.default_branch;
+	}
 	const upstream = getSimpleUpstream(folderManager.repository);
 	if (!upstream?.fetchUrl) {
 		return { permalink: undefined, error: 'Repository does not have any remotes.', originalFile: undefined };
 	}
 	const pathSegment = uri.path.substring(folderManager.repository.rootUri.path.length);
 	return {
-		permalink: `https://github.com/${new Protocol(upstream.fetchUrl).nameWithOwner}/blob/${defaults.base
+		permalink: `https://github.com/${new Protocol(upstream.fetchUrl).nameWithOwner}/blob/${branchName
 			}${pathSegment}${rangeString(range)}`,
 		error: undefined,
 		originalFile: uri
 	};
-}
-
-export function sanitizeIssueTitle(title: string): string {
-	const regex = /[~^:;'".,~#?%*[\]@\\{}()]|\/\//g;
-
-	return title.replace(regex, '').trim().replace(/\s+/g, '-');
-}
-
-const VARIABLE_PATTERN = /\$\{(.*?)\}/g;
-export async function variableSubstitution(
-	value: string,
-	issueModel?: IssueModel,
-	defaults?: PullRequestDefaults,
-	user?: string,
-): Promise<string> {
-	return value.replace(VARIABLE_PATTERN, (match: string, variable: string) => {
-		switch (variable) {
-			case 'user':
-				return user ? user : match;
-			case 'issueNumber':
-				return issueModel ? `${issueModel.number}` : match;
-			case 'issueNumberLabel':
-				return issueModel ? `${getIssueNumberLabel(issueModel, defaults)}` : match;
-			case 'issueTitle':
-				return issueModel ? issueModel.title : match;
-			case 'repository':
-				return defaults ? defaults.repo : match;
-			case 'owner':
-				return defaults ? defaults.owner : match;
-			case 'sanitizedIssueTitle':
-				return issueModel ? sanitizeIssueTitle(issueModel.title) : match; // check what characters are permitted
-			case 'sanitizedLowercaseIssueTitle':
-				return issueModel ? sanitizeIssueTitle(issueModel.title).toLowerCase() : match;
-			default:
-				return match;
-		}
-	});
-}
-
-export function getIssueNumberLabel(issue: IssueModel, repo?: PullRequestDefaults) {
-	const parsedIssue: ParsedIssue = { issueNumber: issue.number, owner: undefined, name: undefined };
-	if (
-		repo &&
-		(repo.owner.toLowerCase() !== issue.remote.owner.toLowerCase() ||
-			repo.repo.toLowerCase() !== issue.remote.repositoryName.toLowerCase())
-	) {
-		parsedIssue.owner = issue.remote.owner;
-		parsedIssue.name = issue.remote.repositoryName;
-	}
-	return getIssueNumberLabelFromParsed(parsedIssue);
-}
-
-function getIssueNumberLabelFromParsed(parsed: ParsedIssue) {
-	if (!parsed.owner || !parsed.name) {
-		return `#${parsed.issueNumber}`;
-	} else {
-		return `${parsed.owner}/${parsed.name}#${parsed.issueNumber}`;
-	}
 }
 
 async function commitWithDefault(manager: FolderRepositoryManager, stateManager: StateManager, all: boolean) {

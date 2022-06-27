@@ -21,10 +21,12 @@ import {
 	ForkDetailsResponse,
 	IssuesResponse,
 	IssuesSearchResponse,
+	ListBranchesResponse,
 	MaxIssueResponse,
 	MentionableUsersResponse,
 	MilestoneIssuesResponse,
 	PullRequestResponse,
+	PullRequestsResponse,
 	ViewerPermissionResponse,
 } from './graphql';
 import { IAccount, IMilestone, Issue, PullRequest, RepoAccessAndMergeMethods } from './interface';
@@ -33,6 +35,7 @@ import { PullRequestModel } from './pullRequestModel';
 import defaultSchema from './queries.gql';
 import {
 	convertRESTPullRequestToRawPullRequest,
+	getOverrideBranch,
 	getPRFetchQuery,
 	parseGraphQLIssue,
 	parseGraphQLPullRequest,
@@ -148,6 +151,7 @@ export class GitHubRepository implements vscode.Disposable {
 
 	constructor(
 		public remote: IRemote,
+		public readonly rootUri: vscode.Uri,
 		private readonly _credentialStore: CredentialStore,
 		private readonly _telemetry: ITelemetry,
 		private readonly _sessionState: ISessionState
@@ -256,6 +260,10 @@ export class GitHubRepository implements vscode.Disposable {
 	}
 
 	async getDefaultBranch(): Promise<string> {
+		const overrideSetting = getOverrideBranch();
+		if (overrideSetting) {
+			return overrideSetting;
+		}
 		try {
 			Logger.debug(`Fetch default branch - enter`, GitHubRepository.ID);
 			const { octokit, remote } = await this.ensure();
@@ -273,26 +281,31 @@ export class GitHubRepository implements vscode.Disposable {
 		return 'master';
 	}
 
+	private _repoAccessAndMergeMethods: RepoAccessAndMergeMethods | undefined;
 	async getRepoAccessAndMergeMethods(): Promise<RepoAccessAndMergeMethods> {
 		try {
-			Logger.debug(`Fetch repo permissions and available merge methods - enter`, GitHubRepository.ID);
-			const { octokit, remote } = await this.ensure();
-			const { data } = await octokit.repos.get({
-				owner: remote.owner,
-				repo: remote.repositoryName,
-			});
-			Logger.debug(`Fetch repo permissions and available merge methods - done`, GitHubRepository.ID);
-
-			return {
-				// Users with push access to repo have rights to merge/close PRs,
-				// edit title/description, assign reviewers/labels etc.
-				hasWritePermission: data.permissions?.push ?? false,
-				mergeMethodsAvailability: {
-					merge: data.allow_merge_commit ?? false,
-					squash: data.allow_squash_merge ?? false,
-					rebase: data.allow_rebase_merge ?? false,
-				},
-			};
+			if (!this._repoAccessAndMergeMethods) {
+				Logger.debug(`Fetch repo permissions and available merge methods - enter`, GitHubRepository.ID);
+				const { octokit, remote } = await this.ensure();
+				const { data } = await octokit.repos.get({
+					owner: remote.owner,
+					repo: remote.repositoryName,
+				});
+				Logger.debug(`Fetch repo permissions and available merge methods - done`, GitHubRepository.ID);
+				const hasWritePermission = data.permissions?.push ?? false;
+				this._repoAccessAndMergeMethods = {
+					// Users with push access to repo have rights to merge/close PRs,
+					// edit title/description, assign reviewers/labels etc.
+					hasWritePermission,
+					mergeMethodsAvailability: {
+						merge: data.allow_merge_commit ?? false,
+						squash: data.allow_squash_merge ?? false,
+						rebase: data.allow_rebase_merge ?? false,
+					},
+					viewerCanAutoMerge: ((data as any).allow_auto_merge && hasWritePermission) ?? false
+				};
+			}
+			return this._repoAccessAndMergeMethods;
 		} catch (e) {
 			Logger.appendLine(`GitHubRepository> Fetching repo permissions and available merge methods failed: ${e}`);
 		}
@@ -304,6 +317,7 @@ export class GitHubRepository implements vscode.Disposable {
 				squash: true,
 				rebase: true,
 			},
+			viewerCanAutoMerge: false
 		};
 	}
 
@@ -363,26 +377,23 @@ export class GitHubRepository implements vscode.Disposable {
 		return undefined;
 	}
 
-	async getPullRequestForBranch(remoteAndBranch: string): Promise<PullRequestModel[] | undefined> {
+	async getPullRequestForBranch(branch: string): Promise<PullRequestModel | undefined> {
 		try {
 			Logger.debug(`Fetch pull requests for branch - enter`, GitHubRepository.ID);
-			const { octokit, remote } = await this.ensure();
-			const result = await octokit.pulls.list({
-				owner: remote.owner,
-				repo: remote.repositoryName,
-				head: remoteAndBranch
+			const { query, remote, schema } = await this.ensure();
+			const { data } = await query<PullRequestsResponse>({
+				query: schema.PullRequestForHead,
+				variables: {
+					owner: remote.owner,
+					name: remote.repositoryName,
+					headRefName: branch,
+				},
 			});
-
-			const pullRequests = result.data
-				.map(pullRequest => {
-					return this.createOrUpdatePullRequestModel(
-						convertRESTPullRequestToRawPullRequest(pullRequest, this),
-					);
-				})
-				.filter(item => item !== null) as PullRequestModel[];
-
 			Logger.debug(`Fetch pull requests for branch - done`, GitHubRepository.ID);
-			return pullRequests;
+
+			if (data.repository.pullRequests.nodes.length > 0) {
+				return this.createOrUpdatePullRequestModel(parseGraphQLPullRequest(data.repository.pullRequests.nodes[0], this));
+			}
 		} catch (e) {
 			Logger.appendLine(`Fetching pull requests for branch failed: ${e}`, GitHubRepository.ID);
 			if (e.code === 404) {
@@ -410,7 +421,7 @@ export class GitHubRepository implements vscode.Disposable {
 				parsedIssue.repositoryUrl,
 				new Protocol(parsedIssue.repositoryUrl),
 			);
-			githubRepository = new GitHubRepository(remote, this._credentialStore, this._telemetry, this._sessionState);
+			githubRepository = new GitHubRepository(remote, this.rootUri, this._credentialStore, this._telemetry, this._sessionState);
 		}
 		return githubRepository;
 	}
@@ -701,8 +712,7 @@ export class GitHubRepository implements vscode.Disposable {
 				},
 			});
 			Logger.debug(`Fetch pull request ${id} - done`, GitHubRepository.ID);
-
-			return this.createOrUpdatePullRequestModel(parseGraphQLPullRequest(data, this));
+			return this.createOrUpdatePullRequestModel(parseGraphQLPullRequest(data.repository.pullRequest, this));
 		} catch (e) {
 			Logger.appendLine(`GithubRepository> Unable to fetch PR: ${e}`);
 			return;
@@ -724,7 +734,7 @@ export class GitHubRepository implements vscode.Disposable {
 			});
 			Logger.debug(`Fetch issue ${id} - done`, GitHubRepository.ID);
 
-			return new IssueModel(this, remote, parseGraphQLPullRequest(data, this));
+			return new IssueModel(this, remote, parseGraphQLPullRequest(data.repository.pullRequest, this));
 		} catch (e) {
 			Logger.appendLine(`GithubRepository> Unable to fetch PR: ${e}`);
 			return;
@@ -732,32 +742,41 @@ export class GitHubRepository implements vscode.Disposable {
 	}
 
 	async listBranches(owner: string, repositoryName: string): Promise<string[]> {
-		const { octokit } = await this.ensure();
+		const { query, remote, schema } = await this.ensure();
 		Logger.debug(`List branches for ${owner}/${repositoryName} - enter`, GitHubRepository.ID);
 
-		try {
-			let branches: string[] = [];
-			const startingTime = new Date().getTime();
-			for await (const response of octokit.paginate.iterator<OctokitCommon.ReposListBranchesResponseData>(
-				'GET /repos/:owner/:repo/branches',
-				{
-					owner: owner,
-					repo: repositoryName,
-					per_page: 100
-				},
-			) as any) {
-				branches.push(...response.data.map(branch => branch.name));
+		let after: string | null = null;
+		let hasNextPage = false;
+		const branches: string[] = [];
+		const startingTime = new Date().getTime();
+
+		do {
+			try {
+				const { data } = await query<ListBranchesResponse>({
+					query: schema.ListBranches,
+					variables: {
+						owner: remote.owner,
+						name: remote.repositoryName,
+						first: 100,
+						after: after,
+					},
+				});
+
+				branches.push(...data.repository.refs.nodes.map(node => node.name));
 				if (new Date().getTime() - startingTime > 5000) {
+					Logger.appendLine('List branches timeout hit.', 'GitHubRepository');
 					break;
 				}
+				hasNextPage = data.repository.refs.pageInfo.hasNextPage;
+				after = data.repository.refs.pageInfo.endCursor;
+			} catch (e) {
+				Logger.debug(`List branches for ${owner}/${repositoryName} failed`, GitHubRepository.ID);
+				throw e;
 			}
+		} while (hasNextPage);
 
-			Logger.debug(`List branches for ${owner}/${repositoryName} - done`, GitHubRepository.ID);
-			return branches;
-		} catch (e) {
-			Logger.debug(`List branches for ${owner}/${repositoryName} failed`, GitHubRepository.ID);
-			throw e;
-		}
+		Logger.debug(`List branches for ${owner}/${repositoryName} - done`, GitHubRepository.ID);
+		return branches;
 	}
 
 	async deleteBranch(pullRequestModel: PullRequestModel): Promise<void> {
@@ -879,16 +898,20 @@ export class GitHubRepository implements vscode.Disposable {
 	 * @param base The base branch. Must be a branch name. If comparing across repositories, use the format <repo_owner>:branch.
 	 * @param head The head branch. Must be a branch name. If comparing across repositories, use the format <repo_owner>:branch.
 	 */
-	public async compareCommits(base: string, head: string): Promise<OctokitCommon.ReposCompareCommitsResponseData> {
-		const { remote, octokit } = await this.ensure();
-		const { data } = await octokit.repos.compareCommits({
-			repo: remote.repositoryName,
-			owner: remote.owner,
-			base,
-			head,
-		});
+	public async compareCommits(base: string, head: string): Promise<OctokitCommon.ReposCompareCommitsResponseData | undefined> {
+		try {
+			const { remote, octokit } = await this.ensure();
+			const { data } = await octokit.repos.compareCommits({
+				repo: remote.repositoryName,
+				owner: remote.owner,
+				base,
+				head,
+			});
 
-		return data;
+			return data;
+		} catch (e) {
+			Logger.appendLine(`Unable to compare commits between ${base} and ${head}: ${e}`, GitHubRepository.ID);
+		}
 	}
 
 	isCurrentUser(login: string): boolean {

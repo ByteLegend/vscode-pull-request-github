@@ -51,7 +51,10 @@ export async function fetchPullRequestModel(
 ): Promise<PullRequestModel> {
 	const ownerAndRepo = substringBeforeLast(substringAfter(htmlUrl, 'github.com/'), '/pull');
 	const remote = await getByteLegendRemote(substringBeforeLast(ownerAndRepo, '/'), substringAfter(ownerAndRepo, '/'));
-	const repo = new GitHubRepository(remote, credentialStore, telemetry, sessionState);
+	const rootUri = Uri.parse('github1s:/').with({
+		authority: `${remote.owner}+${remote.repositoryName}+main`
+	});
+	const repo = new GitHubRepository(remote, rootUri, credentialStore, telemetry, sessionState);
 	return (await repo.getPullRequest(parseInt(substringAfterLast(htmlUrl, '/')))) as PullRequestModel;
 }
 
