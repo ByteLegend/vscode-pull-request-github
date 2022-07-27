@@ -32,7 +32,7 @@ export async function getDefaultByteLegendRemote(): Promise<ByteLegendRemote> {
 		return defaultByteLegendRemote;
 	} else {
 		// Don't use `getContext` here, it might not be initialized yet
-		const browserUrl = (await commands.executeCommand('github1s.vscode.get-browser-url')) as string;
+		const browserUrl = (await commands.executeCommand('github1s.commands.vscode.getBrowserUrl')) as string;
 		const { path } = Uri.parse(browserUrl);
 		const pathParts = path.split('/').filter(Boolean);
 		if (pathParts.length >= 2) {
